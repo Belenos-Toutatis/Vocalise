@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="fond" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a64a3"/>
+      <stop offset="1" stop-color="#2b4c7e"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#fond)"/>
+  <!-- V ouvert : un pavillon d'où s'élève l'onde de la voix -->
+  <path d="M22 50 L64 106 L106 50" fill="none" stroke="#ffffff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#8fd0ff" stroke-width="10" stroke-linecap="round">
+    <path d="M40 38 V52"/>
+    <path d="M56 22 V72"/>
+    <path d="M72 32 V72"/>
+    <path d="M88 44 V52"/>
+  </g>
+</svg>

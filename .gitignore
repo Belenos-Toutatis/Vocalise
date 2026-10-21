@@ -1,0 +1,14 @@
+# Compilation
+gui/target/
+
+# Fichiers de l'utilisateur : enregistrements de sa voix et audio produit (jamais publiés)
+echantillons/
+sorties/
+tests/
+*.wav
+*.flac
+*.mp3
+*.ogg
+
+# Réglages locaux de Claude Code
+.claude/settings.local.json

@@ -1,0 +1,53 @@
+[package]
+name = "vocalise-gui"
+version = "0.2.1"
+edition = "2021"
+description = "Vocalise : synthèse vocale avec ma propre voix (AllTalk/XTTS) et gestion des jeux de voix"
+
+[dependencies]
+eframe = "0.31"
+egui_extras = { version = "0.31", default-features = false }
+# TLS (rustls) uniquement pour l'API GitHub de la vérification de mise à jour (module maj).
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3"
+chrono = "0.4"
+rfd = "0.15"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+strip = true
+
+# Paquet Debian/Ubuntu : `cargo deb` (ou `../installer.sh --deb`) produit target/debian/vocalise_<version>_amd64.deb
+[package.metadata.deb]
+name = "vocalise"
+maintainer = "Emmanuel Wenner <emmanuel.wenner@gmail.com>"
+section = "sound"
+priority = "optional"
+revision = ""
+extended-description = """\
+Application de bureau pour faire lire n'importe quel texte avec votre propre voix, \
+en local : enregistrement guidé des échantillons, gestion des jeux de voix, \
+synthèse avec export WAV, FLAC, MP3 ou OGG. Vocalise pilote le serveur de synthèse \
+vocale AllTalk v2 (moteur XTTS v2), à installer séparément dans ~/alltalk_tts ; \
+le diagnostic intégré (Réglages) guide cette installation."""
+# $auto ne voit que libc : eframe/winit et rfd chargent OpenGL, X11/Wayland et le portail xdg
+# à l'exécution (dlopen, D-Bus), d'où la liste explicite.
+depends = """$auto, pipewire-bin, pulseaudio-utils, xdg-desktop-portal, \
+libegl1, libgl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, \
+libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxrender1"""
+recommends = "ffmpeg"
+assets = [
+    ["target/release/vocalise-gui", "usr/bin/", "755"],
+    ["assets/vocalise.desktop", "usr/share/applications/", "644"],
+    ["assets/vocalise.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/icons/vocalise-16.png", "usr/share/icons/hicolor/16x16/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-24.png", "usr/share/icons/hicolor/24x24/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-32.png", "usr/share/icons/hicolor/32x32/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-48.png", "usr/share/icons/hicolor/48x48/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-64.png", "usr/share/icons/hicolor/64x64/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-128.png", "usr/share/icons/hicolor/128x128/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-256.png", "usr/share/icons/hicolor/256x256/apps/vocalise.png", "644"],
+    ["assets/icons/vocalise-512.png", "usr/share/icons/hicolor/512x512/apps/vocalise.png", "644"],
+]

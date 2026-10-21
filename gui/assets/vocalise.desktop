@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vocalise
+Comment=Synthèse vocale avec ma propre voix (AllTalk/XTTS)
+Exec=vocalise-gui
+Icon=vocalise
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+Keywords=voix;tts;synthèse;narration;
+StartupWMClass=vocalise-gui
