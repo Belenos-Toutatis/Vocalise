@@ -98,6 +98,11 @@ pub fn plus_recente(publication: Publication, installee: Version) -> Option<Publ
 /// `None` si l'on est à jour ou si rien n'a encore été publié. Les erreurs sont des phrases
 /// prêtes à afficher.
 pub fn verifier(depot: &str) -> Resultat {
+    Ok(derniere_publication(depot)?.and_then(|p| plus_recente(p, Version::courante())))
+}
+
+/// Dernière publication du dépôt, quelle que soit sa version ; `None` si rien n'est publié.
+pub fn derniere_publication(depot: &str) -> Result<Option<Publication>, String> {
     let url = format!("https://api.github.com/repos/{depot}/releases/latest");
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
     let reponse = agent
@@ -107,7 +112,7 @@ pub fn verifier(depot: &str) -> Resultat {
     match reponse.call() {
         Ok(r) => {
             let texte = r.into_string().map_err(|e| format!("réponse de GitHub illisible ({e})"))?;
-            Ok(plus_recente(parser_publication(&texte)?, Version::courante()))
+            Ok(Some(parser_publication(&texte)?))
         }
         // Dépôt sans publication (ou privé) : rien à proposer, ce n'est pas une erreur.
         Err(ureq::Error::Status(404, _)) => Ok(None),
@@ -179,8 +184,15 @@ mod tests {
     #[test]
     #[ignore]
     fn integration_github() {
+        // Le dépôt de Vocalise lui-même, sans jeton : sa dernière publication doit être lisible,
+        // avec le paquet .deb joint, et ne jamais être « plus récente » qu'une version future.
+        let d = derniere_publication(DEPOT).unwrap().expect("le dépôt public a une publication");
+        println!("dernière publication de {DEPOT} : {d:?}");
+        assert!(d.paquet.as_deref().is_some_and(|p| p.ends_with(".deb")));
+        assert!(plus_recente(d.clone(), Version(0, 0, 0)).is_some(), "0.0.0 doit voir la mise à jour");
+        assert_eq!(plus_recente(d, Version(99, 0, 0)), None);
         let r = verifier(DEPOT).unwrap();
-        println!("publication plus récente de {DEPOT} : {r:?}");
+        println!("plus récente que {} : {r:?}", Version::courante());
         // Dépôt public connu pour avoir des publications bien plus récentes que Vocalise :
         // valide le chemin réseau et la lecture d'une vraie réponse.
         let p = verifier("cli/cli").unwrap().expect("cli/cli publie des versions");
