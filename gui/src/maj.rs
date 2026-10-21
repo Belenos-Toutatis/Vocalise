@@ -180,6 +180,12 @@ mod tests {
     #[ignore]
     fn integration_github() {
         let r = verifier(DEPOT).unwrap();
-        println!("publication plus récente : {r:?}");
+        println!("publication plus récente de {DEPOT} : {r:?}");
+        // Dépôt public connu pour avoir des publications bien plus récentes que Vocalise :
+        // valide le chemin réseau et la lecture d'une vraie réponse.
+        let p = verifier("cli/cli").unwrap().expect("cli/cli publie des versions");
+        println!("cli/cli : {p:?}");
+        assert!(p.version > Version::courante());
+        assert!(p.page.starts_with("https://github.com/cli/cli/releases/"));
     }
 }
