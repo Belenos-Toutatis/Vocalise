@@ -12,6 +12,9 @@ Le code et l'interface sont en français (identifiants, messages, commentaires) 
 Deux outils cohabitent :
 - `vocalise.py` : script CLI (`vocalise -o sortie.wav "texte"`, lien dans `~/.local/bin`). C'est lui
   que les autres sessions Claude appellent pour produire une voix off (consigne dans `~/.claude/CLAUDE.md`).
+  Il démarre AllTalk s'il ne tourne pas et l'arrête à la fin (sauf `--garder` ; `--arreter` pour
+  décharger) ; état dans `~/.cache/vocalise/` (`alltalk.pid` = serveur lancé par vocalise, verrou
+  partagé entre vocalise simultanés). Il ne touche jamais à un AllTalk lancé par l'interface ou à la main.
 - `gui/` : application de bureau Rust (eframe/egui 0.31), binaire `vocalise-gui`.
 
 ## Commandes
@@ -48,7 +51,7 @@ Deux couches strictement séparées, conçues pour être modifiées indépendamm
 - **Métier, sans egui** : `paths` (config JSON `~/.config/vocalise/config.json` + chemins dérivés),
   `audio` (wav via hound + lecteur RIFF de repli, nettoyage, troncature, concaténation, `niveau_direct`
   qui lit la fin d'un wav en cours d'écriture, conversion ffmpeg), `texte` (découpage par phrases sous
-  1800 caractères, textes modèles embarqués par `include_str!` depuis `gui/textes/`), `alltalk` (API et
+  250 caractères (au-delà, la VRAM de la GTX 1650 ne suffit plus de façon fiable), textes modèles embarqués par `include_str!` depuis `gui/textes/`), `alltalk` (API et
   processus serveur), `voicesets` (jeux de voix), `recorder` (`pw-record` + `pactl -f json`),
   `player` (`pw-play`), `diagnostic` (composants manquants → lien officiel + commande ; bascule du
   moteur vers XTTS par édition de `tts_engines.json`), `maj` (dernière release GitHub via
@@ -74,6 +77,10 @@ module `maj` ; tout le reste parle à AllTalk en HTTP local.
 - Les wav de sortie d'AllTalk sont en float 32 bits, 24 kHz, avec chunks `fact`/`PEAK`.
 - `/api/enginereload` plante (bug AllTalk) : pour changer de moteur, éditer
   `~/alltalk_tts/system/tts_engines/tts_engines.json` (`engine_loaded`, `selected_model`) et redémarrer.
+- VRAM : XTTS occupe ~2 Go et le bureau ~1,5 Go ; la génération échoue souvent (« CUDA out of
+  memory », « CUFFT_INTERNAL_ERROR »), d'autant plus que le morceau est long. D'où morceaux courts,
+  nouvel essai et, dans `vocalise.py`, recoupe adaptative. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments`
+  a été essayé : il fait échouer presque tout, ne pas le remettre.
 - La GTX 1650 est presque pleine quand AllTalk est chargé : si l'ouverture de la fenêtre échoue
   (« Glutin OutOfMemory »), `app::lancer` relance le binaire en rendu logiciel (Mesa llvmpipe).
   Ne pas « corriger » ce comportement.

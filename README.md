@@ -167,7 +167,14 @@ l'application se relance d'elle-même en rendu logiciel.
 vocalise -o narration.wav "Le texte à dire."
 vocalise -f texte.txt -o narration.wav          # texte long, découpé par phrases
 vocalise --voix voiceset:emmanuel --vitesse 1.1 --temperature 0.5 -o s.wav "…"
+vocalise --garder -f partie1.txt -o p1.wav      # garder AllTalk chargé pour enchaîner…
+vocalise --arreter                              # …puis le décharger
 ```
+
+Si AllTalk ne tourne pas, `vocalise` le démarre (environ une minute) et l'arrête à la fin pour
+rendre la mémoire vive et la mémoire vidéo. Avec `--garder`, il reste chargé jusqu'au prochain
+`vocalise` sans `--garder` ou jusqu'à `vocalise --arreter`. Un AllTalk lancé par l'application ou à
+la main n'est jamais arrêté par la commande. Journal du serveur : `~/.cache/vocalise/alltalk.log`.
 
 Conseils de rédaction : nombres en toutes lettres (« vingt-cinq degrés »), ponctuation nette,
 pas d'abréviations.
@@ -191,6 +198,9 @@ Rien n'est jamais supprimé par Vocalise.
 
 - **« AllTalk n'est pas démarré »** : lancez-le depuis Réglages ou avec `cd ~/alltalk_tts && ./start_alltalk.sh`.
   Le chargement du modèle prend environ une minute.
+- **« CUDA out of memory » ou génération qui échoue** : la mémoire vidéo est trop juste (XTTS
+  occupe environ 2 Go). Vocalise réessaie, puis recoupe le texte en morceaux plus courts ; si l'échec
+  persiste, fermez des applications qui utilisent le GPU (navigateur, visionneuses, éditeurs).
 - **La fenêtre ne s'ouvre pas** (`Glutin OutOfMemory` dans le terminal) : la mémoire vidéo est pleine.
   Vocalise se relance seul en rendu logiciel ; sinon fermez d'autres applications utilisant le GPU.
 - **Aucun son enregistré** : vérifiez le micro dans Ma voix (bouton ↻ pour actualiser la liste) et

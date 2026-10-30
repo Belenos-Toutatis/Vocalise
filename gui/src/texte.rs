@@ -2,8 +2,11 @@
 
 use std::path::Path;
 
-/// Marge sous la limite `api_max_characters` (2000) d'AllTalk.
-pub const MAX_CHARS: usize = 1800;
+/// Taille maximale d'un morceau envoyé à AllTalk (sa propre limite est 2000). La mémoire de la
+/// carte graphique croît avec la longueur : sur une GTX 1650 (4 Go), les morceaux de plus de
+/// ~900 caractères échouent toujours (« CUDA out of memory »), et dès ~500 quand le bureau occupe
+/// davantage de VRAM. On reste donc à une ou deux phrases par morceau.
+pub const MAX_CHARS: usize = 250;
 
 /// Textes modèles embarqués (titre, corps). Environ une minute de lecture chacun.
 pub const EMBARQUES: &[(&str, &str)] = &[
@@ -253,13 +256,13 @@ mod tests {
 
     #[test]
     fn accents_comptes_en_caracteres() {
-        // 1 700 caractères mais ~3 400 octets : un seul morceau.
-        let un = phrase_de(1700, "éàèù");
+        // Juste sous la limite en caractères, mais deux fois plus d'octets : un seul morceau.
+        let un = phrase_de(MAX_CHARS - 100, "éàèù");
         assert!(un.len() > MAX_CHARS);
         let r = decouper(&un);
         assert_eq!(r.len(), 1);
-        // Deux phrases de 1 000 caractères accentués : 2 morceaux (2 001 > 1 800).
-        let deux = format!("{} {}", phrase_de(1000, "éèê"), phrase_de(1000, "çàù"));
+        // Deux phrases accentuées dont la somme dépasse la limite : 2 morceaux.
+        let deux = format!("{} {}", phrase_de(MAX_CHARS * 6 / 10, "éèê"), phrase_de(MAX_CHARS * 6 / 10, "çàù"));
         let r = decouper(&deux);
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|m| m.chars().count() < MAX_CHARS));

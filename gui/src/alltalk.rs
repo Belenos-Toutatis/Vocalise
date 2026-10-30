@@ -82,6 +82,60 @@ pub struct Progression {
     pub total: usize,
 }
 
+/// Nombre d'essais par morceau quand AllTalk échoue côté serveur.
+const ESSAIS: u32 = 3;
+
+/// Une requête de génération. Erreur : (réessayable, message lisible).
+fn demander(
+    agent: &ureq::Agent,
+    req: &Requete,
+    morceau: &str,
+    nom: &str,
+    vitesse: &str,
+    temperature: &str,
+) -> Result<serde_json::Value, (bool, String)> {
+    let rep = agent.post(&format!("{API}/api/tts-generate")).send_form(&[
+        ("text_input", morceau),
+        ("text_filtering", "standard"),
+        ("character_voice_gen", req.voix.as_str()),
+        ("narrator_enabled", "false"),
+        ("text_not_inside", "character"),
+        ("language", req.langue.as_str()),
+        ("output_file_name", nom),
+        ("output_file_timestamp", "false"),
+        ("autoplay", "false"),
+        ("speed", vitesse),
+        ("temperature", temperature),
+    ]);
+    let rep = match rep {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, r)) => {
+            let corps = r.into_string().unwrap_or_default();
+            let corps = corps.trim();
+            let message = if corps.is_empty() {
+                format!("AllTalk a refusé la demande (erreur HTTP {code}).")
+            } else {
+                format!("AllTalk a refusé la demande (erreur HTTP {code}) : {}", abreger(corps, 400))
+            };
+            return Err((code >= 500, message));
+        }
+        Err(ureq::Error::Transport(t)) => {
+            return Err((
+                false,
+                format!("Impossible de joindre AllTalk ({t}). Vérifiez que le serveur est démarré (voyant « AllTalk » en haut de la fenêtre)."),
+            ));
+        }
+    };
+    let json: serde_json::Value = rep
+        .into_json()
+        .map_err(|e| (false, format!("Réponse d'AllTalk illisible : {e}")))?;
+    if json.get("status").and_then(|s| s.as_str()) == Some("generate-failure") {
+        let detail = json.get("error").and_then(|e| e.as_str()).unwrap_or("raison inconnue");
+        return Err((true, format!("AllTalk n'a pas pu générer la voix : {detail}")));
+    }
+    Ok(json)
+}
+
 /// Synthétise `req.texte` : découpe (texte::decouper), POST /api/tts-generate par morceau
 /// (champs : text_input, text_filtering=standard, character_voice_gen, narrator_enabled=false,
 /// text_not_inside=character, language, output_file_name=vocalise_HHMMSS_NNN,
@@ -103,46 +157,25 @@ pub fn generer(req: &Requete, sortie: &Path, progression: &dyn Fn(Progression)) 
     for (i, morceau) in morceaux.iter().enumerate() {
         progression(Progression { morceau: i + 1, total });
         let nom = format!("vocalise_{heure}_{:03}", i + 1);
-        let rep = agent
-            .post(&format!("{API}/api/tts-generate"))
-            .send_form(&[
-                ("text_input", morceau.as_str()),
-                ("text_filtering", "standard"),
-                ("character_voice_gen", req.voix.as_str()),
-                ("narrator_enabled", "false"),
-                ("text_not_inside", "character"),
-                ("language", req.langue.as_str()),
-                ("output_file_name", nom.as_str()),
-                ("output_file_timestamp", "false"),
-                ("autoplay", "false"),
-                ("speed", vitesse.as_str()),
-                ("temperature", temperature.as_str()),
-            ]);
-        let rep = match rep {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, r)) => {
-                let corps = r.into_string().unwrap_or_default();
-                let corps = corps.trim();
-                return Err(if corps.is_empty() {
-                    format!("AllTalk a refusé la demande (erreur HTTP {code}).")
-                } else {
-                    format!("AllTalk a refusé la demande (erreur HTTP {code}) : {}", abreger(corps, 400))
-                });
-            }
-            Err(ureq::Error::Transport(t)) => {
-                return Err(format!(
-                    "Impossible de joindre AllTalk ({t}). Vérifiez que le serveur est démarré (voyant « AllTalk » en haut de la fenêtre)."
-                ));
+        // Carte de 4 Go : la VRAM manque parfois de quelques Mo (« CUDA out of memory »,
+        // « CUFFT_INTERNAL_ERROR ») ; l'échec en libère et l'essai suivant passe en général.
+        let mut essai = 1;
+        let json = loop {
+            match demander(&agent, req, morceau, &nom, &vitesse, &temperature) {
+                Ok(json) => break json,
+                Err((reessayable, e)) if !reessayable || essai >= ESSAIS => {
+                    return Err(if reessayable {
+                        format!("{e} (après {ESSAIS} essais ; cause probable : mémoire de la carte graphique presque pleine, fermez des applications gourmandes puis réessayez)")
+                    } else {
+                        e
+                    });
+                }
+                Err(_) => {
+                    essai += 1;
+                    std::thread::sleep(Duration::from_secs(2));
+                }
             }
         };
-        let json: serde_json::Value = rep
-            .into_json()
-            .map_err(|e| format!("Réponse d'AllTalk illisible : {e}"))?;
-        let statut = json.get("status").and_then(|s| s.as_str()).unwrap_or("");
-        if statut == "generate-failure" {
-            let detail = json.get("error").and_then(|e| e.as_str()).unwrap_or("raison inconnue");
-            return Err(format!("AllTalk n'a pas pu générer la voix : {detail}"));
-        }
         let chemin = json
             .get("output_file_path")
             .and_then(|p| p.as_str())
@@ -241,6 +274,10 @@ impl Serveur {
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
+            // Erreurs du moteur visibles tout de suite dans le journal. (Ne pas ajouter
+            // PYTORCH_CUDA_ALLOC_CONF=expandable_segments : essayé, il fait échouer presque
+            // toutes les générations sur la GTX 1650.)
+            .env("PYTHONUNBUFFERED", "1")
             .process_group(0)
             .spawn()
             .map_err(|e| format!("Impossible de lancer AllTalk : {e}"))?;
