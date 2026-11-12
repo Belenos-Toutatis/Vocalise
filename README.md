@@ -18,7 +18,8 @@ Deux outils :
 
 ## Prérequis
 
-- **Linux** avec **PipeWire** (Ubuntu 22.04 et suivants, Fedora, etc. ; développé sur Ubuntu 26.10 / GNOME 51).
+- **Linux** avec **PipeWire** (Ubuntu 22.04 et suivants, Fedora, etc. ; développé sur Ubuntu 26.10 / GNOME 51),
+  ou **Windows 10/11 sur processeur x64** (Intel ou AMD ; voir [Windows](#windows) ; pas les PC ARM).
 - **Carte graphique NVIDIA** avec au moins 4 Go de mémoire, pilote installé (XTTS fonctionne aussi
   sur processeur seul, mais plusieurs fois plus lentement que le temps réel).
 - Environ **8 Go de disque** pour AllTalk, son environnement Python et le modèle XTTS.
@@ -142,6 +143,39 @@ Il n'a besoin que de Python 3 (bibliothèque standard) et de `sox` pour recoller
 5. **Synthèse** → voix « Jeu de voix : votre-jeu » → un texte → Générer.
 
 Le script `vocalise` utilise par défaut le jeu `emmanuel` (modifiable avec `--voix voiceset:nom`).
+
+## Windows
+
+Vocalise fonctionne aussi sous Windows 10 et 11 sur processeur x64 (Intel ou AMD). Les PC à
+processeur ARM (Surface à puce SQ, Snapdragon) ne sont pas pris en charge : AllTalk et PyTorch n'y
+fonctionnent pas correctement.
+
+1. **AllTalk v2.** Installez Git (`winget install Git.Git`), puis dans PowerShell :
+
+   ```powershell
+   git clone -b alltalkbeta https://github.com/erew123/alltalk_tts $env:USERPROFILE\alltalk_tts
+   cd $env:USERPROFILE\alltalk_tts
+   .\atsetup.bat
+   ```
+
+   Choisissez l'installation autonome (« Standalone »), puis lancez `start_alltalk.bat` une
+   première fois pour télécharger le modèle XTTS. Sans carte NVIDIA, XTTS tourne sur le
+   processeur : la synthèse marche, mais plusieurs fois plus lentement qu'avec une carte graphique.
+2. **Vocalise.** Téléchargez `vocalise_<version>_windows_x64_setup.exe` sur la page des
+   [publications](https://github.com/Belenos-Toutatis/Vocalise/releases/latest) et lancez-le.
+   L'installation se fait pour vous seul, sans droits administrateur, dans
+   `%LOCALAPPDATA%\Programs\Vocalise`. Windows SmartScreen peut avertir que l'éditeur est
+   inconnu (l'installateur n'est pas signé) : « Informations complémentaires », puis « Exécuter quand même ».
+3. **ffmpeg** (facultatif, pour l'export FLAC/MP3/OGG) : `winget install --id Gyan.FFmpeg -e`.
+4. **Votre voix.** Recopiez le dossier de votre jeu de voix depuis un autre ordinateur
+   (`alltalk_tts\voices\xtts_multi_voice_sets\<nom>`), ou enregistrez de nouveaux échantillons
+   dans Ma voix. Autorisez l'accès au micro si Windows le demande.
+
+La commande `vocalise` est installée avec l'application (case « Ajouter la commande au PATH ») :
+elle fonctionne comme sous Linux dans PowerShell ou l'invite de commandes, avec le Python de votre
+choix ou, à défaut, celui de l'environnement d'AllTalk. Réglages : `%APPDATA%\vocalise\config.json`.
+Pour que Claude Code utilise votre voix sur cet ordinateur, copiez `windows/consigne-claude.md`
+dans `%USERPROFILE%\.claude\CLAUDE.md`.
 
 ## Utilisation
 

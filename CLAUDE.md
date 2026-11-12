@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Ce qu'est Vocalise
 
-Narration audio avec la voix clonée de l'utilisateur, en local. Le moteur est **AllTalk v2 + XTTS v2**
+Narration audio avec la voix clonée de l'utilisateur, en local, sous Linux et Windows x64. Le moteur est **AllTalk v2 + XTTS v2**
 (`~/alltalk_tts`, hors de ce dépôt, env conda isolé, GPU GTX 1650 4 Go). Vocalise ne synthétise rien
 lui-même : il pilote l'API HTTP d'AllTalk (`127.0.0.1:7851`) et gère les échantillons de voix.
 Le code et l'interface sont en français (identifiants, messages, commentaires) : garder cette convention.
@@ -15,7 +15,27 @@ Deux outils cohabitent :
   Il démarre AllTalk s'il ne tourne pas et l'arrête à la fin (sauf `--garder` ; `--arreter` pour
   décharger) ; état dans `~/.cache/vocalise/` (`alltalk.pid` = serveur lancé par vocalise, verrou
   partagé entre vocalise simultanés). Il ne touche jamais à un AllTalk lancé par l'interface ou à la main.
+  Portable Linux/Windows (bibliothèque standard seule ; assemblage des wav en Python pur, sans sox).
 - `gui/` : application de bureau Rust (eframe/egui 0.31), binaire `vocalise-gui`.
+
+## Windows
+
+Tout ce qui dépend du système est dans `gui/src/systeme.rs` (dossiers, lanceur `start_alltalk.sh`
+ou `.bat`, ouverture, commandes d'installation, critère du paquet de mise à jour) ou derrière
+`#[cfg(windows)]` : `recorder`/`player` (module `wasapi`, cpal, dépendance Windows seulement ;
+le flux cpal vit dans un thread dédié car il n'est pas `Send`), `alltalk::Serveur` (`cmd /C
+start_alltalk.bat` sans console, arrêt par `taskkill /T /F`), `app::lancer` (rendu logiciel Mesa et
+mode X11 réservés à Linux). Sous Linux, l'audio reste PipeWire : ne pas basculer sur cpal.
+
+```bash
+cargo zigbuild --target x86_64-pc-windows-gnu   # vérifie la compilation Windows depuis Linux
+```
+
+(`rustup target add x86_64-pc-windows-gnu`, `pip install --user ziglang`, `cargo install
+cargo-zigbuild` ; l'exécutable ainsi produit n'est pas testé, il n'a pas d'icône.) Les vrais tests
+Windows et l'installateur (Inno Setup, `windows/vocalise.iss`, par utilisateur, ajoute le dossier au
+PATH) sont faits par `.github/workflows/windows.yml` sur `windows-latest` ; sur une étiquette
+`vX.Y.Z`, l'installateur `vocalise_X.Y.Z_windows_x64_setup.exe` est joint à la publication.
 
 ## Commandes
 
@@ -42,7 +62,9 @@ et la série se figeait. Recouverte, la série dure ~40 s au lieu de 10 s ; gard
 Pas de lint configuré. Dépôt git : `Belenos-Toutatis/Vocalise` sur GitHub (branche `main`) ; les
 publications (`gh release create vX.Y.Z gui/target/debian/vocalise_X.Y.Z_amd64.deb`) alimentent la
 vérification de mise à jour de l'application. Pour livrer une version : bumper `version` dans
-`gui/Cargo.toml`, `./installer.sh --deb`, commit, tag `vX.Y.Z`, release avec le `.deb` joint.
+`gui/Cargo.toml`, `./installer.sh --deb`, commit, tag `vX.Y.Z`, release avec le `.deb` joint ;
+le workflow Windows ajoute ensuite l'installateur `.exe` à la même publication (créer la
+publication avant que le workflow de l'étiquette arrive à sa dernière étape, ou le relancer).
 
 ## Architecture de `gui/`
 

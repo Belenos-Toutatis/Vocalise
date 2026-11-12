@@ -392,6 +392,7 @@ impl Serveur {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn quote_sh_echappe() {
         assert_eq!(quote_sh("/a b/c"), "'/a b/c'");
@@ -414,6 +415,7 @@ mod tests {
         assert_eq!(v, vec!["voiceset:plein", "alice.WAV", "Zed.wav"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn serveur_drop_tue_le_groupe() {
         let d = std::env::temp_dir().join(format!("vocalise-test-drop-{}", std::process::id()));
@@ -440,6 +442,7 @@ mod tests {
         assert!(r.err().is_some_and(|e| e.contains("introuvable")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn serveur_demarre_et_s_arrete() {
         // Faux « start_alltalk.sh » : un sleep dans le groupe de processus.
@@ -457,6 +460,30 @@ mod tests {
         s.arreter();
         assert!(!s.en_vie());
         assert!(t.elapsed() < Duration::from_secs(10));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Windows : faux « start_alltalk.bat » qui lance un processus enfant long (ping) ; l'arrêt
+    /// doit terminer tout l'arbre rapidement, et l'abandon (Drop) aussi.
+    #[cfg(windows)]
+    #[test]
+    fn serveur_windows_demarre_et_s_arrete() {
+        let d = std::env::temp_dir().join(format!("vocalise-test-serveur-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("start_alltalk.bat"), "@echo off\r\nping -n 300 127.0.0.1 >nul\r\n").unwrap();
+        let mut s = Serveur::demarrer(&d, &d.join("alltalk.log")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(s.en_vie());
+        let t = Instant::now();
+        s.arreter();
+        assert!(!s.en_vie());
+        assert!(t.elapsed() < Duration::from_secs(15));
+        let s = Serveur::demarrer(&d, &d.join("alltalk.log")).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let t = Instant::now();
+        drop(s);
+        assert!(t.elapsed() < Duration::from_secs(15));
         let _ = std::fs::remove_dir_all(&d);
     }
 
