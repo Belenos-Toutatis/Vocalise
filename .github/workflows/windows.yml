@@ -1,0 +1,70 @@
+# Version Windows de Vocalise : tests, compilation et installateur sur une vraie machine Windows.
+# - à chaque envoi sur main ou windows : tests + installateur en artefact téléchargeable ;
+# - sur une étiquette vX.Y.Z : l'installateur est en plus joint à la publication GitHub du même nom
+#   (créée par `gh release create`), ce qui alimente la vérification de mise à jour sous Windows.
+name: Windows
+
+on:
+  push:
+    branches: [main, windows]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gui/target
+          key: windows-cargo-${{ hashFiles('gui/Cargo.lock') }}
+
+      - name: Tests
+        working-directory: gui
+        run: cargo test --locked
+
+      - name: Compilation
+        working-directory: gui
+        run: cargo build --release --locked
+
+      - name: Commande vocalise (syntaxe et aide)
+        run: |
+          python -m py_compile vocalise.py
+          python vocalise.py --help | Select-Object -First 3
+          python vocalise.py --arreter
+
+      - name: Installateur
+        run: |
+          $version = (Select-String -Path gui/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup -y --no-progress
+            $env:Path += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          iscc /DVersion=$version windows\vocalise.iss
+          Get-ChildItem gui\target\windows
+
+      - name: Artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vocalise-windows
+          path: gui/target/windows/*_setup.exe
+
+      - name: Joindre à la publication
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $fichier = Get-ChildItem gui\target\windows\*_setup.exe | Select-Object -First 1
+          gh release upload "${{ github.ref_name }}" "$($fichier.FullName)" --clobber

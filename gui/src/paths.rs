@@ -1,5 +1,5 @@
 //! Configuration persistante et chemins du projet.
-//! Fichier : ~/.config/vocalise/config.json
+//! Fichier : ~/.config/vocalise/config.json (Linux), %APPDATA%\vocalise\config.json (Windows).
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// Dossier d'installation d'AllTalk (contient start_alltalk.sh et voices/).
+    /// Dossier d'installation d'AllTalk (contient start_alltalk.sh ou .bat, et voices/).
     pub alltalk_dir: PathBuf,
     /// Dossier du projet Vocalise (echantillons/, sorties/, gui/textes/).
     pub vocalise_dir: PathBuf,
@@ -19,7 +19,8 @@ pub struct Config {
     pub voix: String,
     /// Jeu de voix actif pour l'enregistrement.
     pub jeu_actif: String,
-    /// Identifiant PipeWire du micro choisi ("" = source par défaut).
+    /// Identifiant du micro choisi : nom PipeWire sous Linux, nom du périphérique sous Windows
+    /// ("" = micro par défaut du système).
     pub micro: String,
     pub vitesse: f32,
     pub temperature: f32,
@@ -36,7 +37,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/ewenner".into()));
+        let home = crate::systeme::dossier_personnel();
         let alltalk_dir = std::env::var("ALLTALK_DIR").map(PathBuf::from).unwrap_or(home.join("alltalk_tts"));
         let vocalise_dir = std::env::var("VOCALISE_DIR").map(PathBuf::from).unwrap_or(home.join("Vocalise"));
         Config {
@@ -60,10 +61,7 @@ impl Default for Config {
 impl Config {
     /// Chemin du fichier de configuration.
     pub fn fichier() -> PathBuf {
-        let base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
-        base.join("vocalise").join("config.json")
+        crate::systeme::dossier_config().join("vocalise").join("config.json")
     }
 
     /// Charge la configuration, ou les valeurs par défaut si absente/illisible.
@@ -161,7 +159,7 @@ impl Config {
         self.vocalise_dir.join("alltalk.log")
     }
     pub fn start_script(&self) -> PathBuf {
-        self.alltalk_dir.join("start_alltalk.sh")
+        self.alltalk_dir.join(crate::systeme::LANCEUR_ALLTALK)
     }
 }
 
@@ -221,30 +219,13 @@ pub fn nom_sur(s: &str) -> String {
     }
 }
 
-/// Lance `xdg-open` sans attendre ni hériter des flux ; un thread récolte le processus fini.
-fn lancer_xdg(arg: &std::ffi::OsStr) {
-    use std::process::{Command, Stdio};
-    if let Ok(mut child) = Command::new("xdg-open")
-        .arg(arg)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-    }
-}
-
-/// Ouvre un chemin ou une URL avec l'application par défaut (xdg-open), sans bloquer.
-/// Échec silencieux si xdg-open est absent.
+/// Ouvre un chemin avec l'application par défaut (xdg-open, explorer), sans bloquer.
 pub fn ouvrir(cible: &Path) {
-    lancer_xdg(cible.as_os_str());
+    crate::systeme::ouvrir(cible.as_os_str());
 }
 
 pub fn ouvrir_url(url: &str) {
-    lancer_xdg(std::ffi::OsStr::new(url));
+    crate::systeme::ouvrir(std::ffi::OsStr::new(url));
 }
 
 #[cfg(test)]

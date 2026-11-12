@@ -2,6 +2,7 @@
 //! et commande d'installation pour chacun. Aucun accès réseau.
 
 use crate::paths::Config;
+use crate::systeme::{self, LANCEUR_ALLTALK};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,23 +23,26 @@ pub struct Verification {
     pub detail: String,
     /// Page officielle de téléchargement ou d'installation, s'il y a lieu.
     pub lien: Option<&'static str>,
-    /// Commande à exécuter dans un terminal pour installer, s'il y a lieu (Ubuntu/Debian).
+    /// Commande à exécuter pour installer, s'il y a lieu : terminal (Ubuntu/Debian) ou PowerShell
+    /// (Windows).
     pub commande: Option<String>,
 }
 
 /// Exécute toutes les vérifications, dans l'ordre d'affichage :
-/// 1. Dossier AllTalk : `cfg.alltalk_dir` existe et contient `start_alltalk.sh` et `voices/`.
+/// 1. Dossier AllTalk : `cfg.alltalk_dir` existe et contient le lanceur (`start_alltalk.sh` ou `.bat`)
+///    et `voices/`.
 ///    Lien <https://github.com/erew123/alltalk_tts>, commande
 ///    `git clone -b alltalkbeta https://github.com/erew123/alltalk_tts ~/alltalk_tts && cd ~/alltalk_tts && ./atsetup.sh`.
 /// 2. Moteur XTTS : `moteur_configure` vaut "xtts" ET le dossier `models/xtts/` contient au moins un
 ///    sous-dossier avec `model.pth`. Lien vers le wiki AllTalk, pas de commande (bouton dédié dans l'UI).
 /// 3. GPU NVIDIA : `nvidia-smi` répond (détail : nom de la carte et mémoire). Gravité Fonction
 ///    (XTTS tourne aussi sur CPU, lentement). Lien <https://www.nvidia.com/drivers>, commande
-///    `sudo ubuntu-drivers install`.
-/// 4. PipeWire : `pw-record`, `pw-play` et `pactl` trouvés dans le PATH. Lien <https://pipewire.org/>,
-///    commande `sudo apt install pipewire-bin pulseaudio-utils`.
+///    `sudo ubuntu-drivers install` (aucune sous Windows).
+/// 4. Micro et écoute. Linux : `pw-record`, `pw-play` et `pactl` dans le PATH, lien <https://pipewire.org/>,
+///    commande `sudo apt install pipewire-bin pulseaudio-utils`. Windows : un micro et une sortie
+///    son vus par WASAPI (cpal).
 /// 5. ffmpeg : `ffmpeg -version` répond. Lien <https://ffmpeg.org/download.html>, commande
-///    `sudo apt install ffmpeg`.
+///    `sudo apt install ffmpeg` ou `winget install --id Gyan.FFmpeg -e`.
 /// 6. Jeu de voix : `cfg.voicesets_dir()/cfg.jeu_actif` contient au moins un wav. Gravité Fonction,
 ///    pas de lien ni de commande (détail : « Enregistrez un premier échantillon dans Ma voix »).
 pub fn verifier(cfg: &Config) -> Vec<Verification> {
@@ -46,12 +50,12 @@ pub fn verifier(cfg: &Config) -> Vec<Verification> {
     let dir = &cfg.alltalk_dir;
 
     // 1. Dossier AllTalk.
-    let script = dir.join("start_alltalk.sh");
+    let script = dir.join(LANCEUR_ALLTALK);
     let voices = dir.join("voices");
     let (ok1, detail1) = if !dir.is_dir() {
         (false, format!("Le dossier d'AllTalk est introuvable : {}. Installez AllTalk ou corrigez le dossier dans les réglages.", dir.display()))
     } else if !script.is_file() {
-        (false, format!("Le dossier {} existe, mais il ne contient pas start_alltalk.sh : ce n'est pas une installation d'AllTalk.", dir.display()))
+        (false, format!("Le dossier {} existe, mais il ne contient pas {LANCEUR_ALLTALK} : ce n'est pas une installation d'AllTalk.", dir.display()))
     } else if !voices.is_dir() {
         (false, format!("Le dossier {} ne contient pas de sous-dossier voices : l'installation d'AllTalk semble incomplète.", dir.display()))
     } else {
@@ -63,9 +67,7 @@ pub fn verifier(cfg: &Config) -> Vec<Verification> {
         gravite: Gravite::Bloquant,
         detail: detail1,
         lien: Some("https://github.com/erew123/alltalk_tts"),
-        commande: Some(
-            "git clone -b alltalkbeta https://github.com/erew123/alltalk_tts ~/alltalk_tts && cd ~/alltalk_tts && ./atsetup.sh".into(),
-        ),
+        commande: Some(systeme::installations().alltalk),
     });
 
     // 2. Moteur XTTS : configuré ET modèle présent.
@@ -106,23 +108,11 @@ pub fn verifier(cfg: &Config) -> Vec<Verification> {
             None => "Aucune carte NVIDIA détectée (nvidia-smi absent ou muet). La synthèse fonctionnera sur le processeur, beaucoup plus lentement.".into(),
         },
         lien: Some("https://www.nvidia.com/drivers"),
-        commande: Some("sudo ubuntu-drivers install".into()),
+        commande: systeme::installations().pilote_nvidia.map(str::to_string),
     });
 
-    // 4. PipeWire.
-    let manquants: Vec<&str> = ["pw-record", "pw-play", "pactl"].into_iter().filter(|p| !dans_le_path(p)).collect();
-    res.push(Verification {
-        composant: "PipeWire (micro et écoute)".into(),
-        ok: manquants.is_empty(),
-        gravite: Gravite::Fonction,
-        detail: if manquants.is_empty() {
-            "Trouvé : pw-record, pw-play et pactl.".into()
-        } else {
-            format!("Programmes manquants : {}. L'enregistrement et l'écoute ne marcheront pas.", manquants.join(", "))
-        },
-        lien: Some("https://pipewire.org/"),
-        commande: Some("sudo apt install pipewire-bin pulseaudio-utils".into()),
-    });
+    // 4. Micro et écoute.
+    res.push(verifier_audio());
 
     // 5. ffmpeg.
     let ffmpeg = executer("ffmpeg", &["-version"]).map(|t| t.lines().next().unwrap_or("").trim().to_string());
@@ -136,7 +126,7 @@ pub fn verifier(cfg: &Config) -> Vec<Verification> {
             None => "ffmpeg est absent : seul l'export WAV est possible (pas FLAC, MP3 ni OGG).".into(),
         },
         lien: Some("https://ffmpeg.org/download.html"),
-        commande: Some("sudo apt install ffmpeg".into()),
+        commande: Some(systeme::installations().ffmpeg.into()),
     });
 
     // 6. Jeu de voix actif.
@@ -168,9 +158,9 @@ fn modele_xtts_present(alltalk_dir: &Path) -> bool {
 /// en moins de 2 s ; sinon (absente, en erreur, trop lente → tuée) None.
 fn executer(programme: &str, args: &[&str]) -> Option<String> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
-    let mut child = Command::new(programme)
+    let mut child = crate::systeme::commande(programme)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -257,19 +247,44 @@ pub fn configurer_xtts(alltalk_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Un programme est-il dans le PATH ? (parcours de `PATH`, fichier exécutable)
-pub fn dans_le_path(programme: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    if programme.is_empty() {
-        return false;
+/// Linux : programmes PipeWire `pw-record`, `pw-play` et `pactl` dans le PATH.
+#[cfg(not(windows))]
+fn verifier_audio() -> Verification {
+    let manquants: Vec<&str> = ["pw-record", "pw-play", "pactl"].into_iter().filter(|p| !systeme::dans_le_path(p)).collect();
+    Verification {
+        composant: "PipeWire (micro et écoute)".into(),
+        ok: manquants.is_empty(),
+        gravite: Gravite::Fonction,
+        detail: if manquants.is_empty() {
+            "Trouvé : pw-record, pw-play et pactl.".into()
+        } else {
+            format!("Programmes manquants : {}. L'enregistrement et l'écoute ne marcheront pas.", manquants.join(", "))
+        },
+        lien: Some("https://pipewire.org/"),
+        commande: Some("sudo apt install pipewire-bin pulseaudio-utils".into()),
     }
-    std::env::var_os("PATH")
-        .map(|chemins| {
-            std::env::split_paths(&chemins).any(|d| {
-                std::fs::metadata(d.join(programme)).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+}
+
+/// Windows : au moins un micro et une sortie son vus par WASAPI.
+#[cfg(windows)]
+fn verifier_audio() -> Verification {
+    let micros = crate::recorder::micros();
+    let sortie = crate::player::sortie_par_defaut();
+    let ok = !micros.is_empty() && sortie.is_some();
+    let detail = match (micros.first(), &sortie) {
+        (Some(m), Some(s)) => format!("Micro : {} ; sortie son : {s}.", m.nom),
+        (None, Some(_)) => "Aucun micro détecté : branchez-en un ou autorisez l'accès au micro (Paramètres → Confidentialité → Microphone).".into(),
+        (Some(_), None) => "Aucune sortie son détectée : l'écoute ne marchera pas.".into(),
+        (None, None) => "Ni micro ni sortie son détectés.".into(),
+    };
+    Verification {
+        composant: "Micro et écoute".into(),
+        ok,
+        gravite: Gravite::Fonction,
+        detail,
+        lien: None,
+        commande: None,
+    }
 }
 
 #[cfg(test)]
@@ -301,13 +316,6 @@ mod tests {
     const AVEC_XTTS: &str = r#"{"engines_available":[{"name":"piper","selected_model":"piper"},
         {"name":"xtts","selected_model":"xtts - xttsv2_2.0.3"}],
         "engine_loaded":"piper","selected_model":"piper","autre":42}"#;
-
-    #[test]
-    fn path() {
-        assert!(dans_le_path("sh"));
-        assert!(!dans_le_path("programme-vraiment-improbable-xyz"));
-        assert!(!dans_le_path(""));
-    }
 
     #[test]
     fn moteur_lu_et_configure() {
@@ -363,7 +371,7 @@ mod tests {
         let cfg = cfg_pour(&t.0);
         let a = &cfg.alltalk_dir;
         std::fs::create_dir_all(a.join("voices")).unwrap();
-        std::fs::write(a.join("start_alltalk.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::write(a.join(LANCEUR_ALLTALK), "rem\n").unwrap();
         ecrire_moteurs(a, r#"{"engines_available":[{"name":"xtts","selected_model":"xtts - xttsv2_2.0.3"}],"engine_loaded":"xtts"}"#);
         // Moteur configuré mais modèle absent : point 2 en échec avec le bon message.
         let v = verifier(&cfg);

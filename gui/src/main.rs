@@ -1,3 +1,6 @@
+// Sous Windows, pas de fenêtre de console derrière l'application (version de production).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! Vocalise : synthèse vocale avec ma propre voix (AllTalk + XTTS) et gestion des jeux de voix.
 //!
 //! Modules « métier » (sans interface) : paths, audio, texte, alltalk, voicesets, recorder, player,
@@ -17,6 +20,7 @@ mod maj;
 mod paths;
 mod player;
 mod recorder;
+mod systeme;
 mod texte;
 mod ui;
 mod voicesets;

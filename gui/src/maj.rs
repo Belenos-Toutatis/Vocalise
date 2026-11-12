@@ -1,6 +1,7 @@
 //! Vérification de mise à jour : interroge la dernière publication (« release ») du dépôt GitHub
 //! de Vocalise et la compare à la version compilée. Aucune installation automatique : on propose
-//! seulement le lien du paquet `.deb` et la page des nouveautés.
+//! seulement le lien du paquet (`.deb` sous Linux, installateur `_setup.exe` sous Windows) et la
+//! page des nouveautés.
 //!
 //! C'est le seul endroit du programme qui sort de la machine (HTTPS vers api.github.com, sans
 //! authentification : 60 requêtes par heure suffisent largement pour une vérification par jour).
@@ -55,7 +56,7 @@ pub struct Publication {
     pub version: Version,
     /// Page de la publication (nouveautés, fichiers).
     pub page: String,
-    /// Lien direct du paquet `.deb`, s'il est joint.
+    /// Lien direct du paquet pour ce système, s'il est joint (voir `systeme::est_paquet`).
     pub paquet: Option<String>,
     /// Date de publication (AAAA-MM-JJ), si GitHub la donne.
     pub date: Option<String>,
@@ -82,9 +83,14 @@ struct Asset {
 
 /// Lit la réponse de `GET /repos/<dépôt>/releases/latest`.
 pub fn parser_publication(json: &str) -> Result<Publication, String> {
+    parser_publication_pour(json, crate::systeme::est_paquet)
+}
+
+/// Idem, avec le critère qui reconnaît le paquet du système voulu (pour les tests).
+fn parser_publication_pour(json: &str, est_paquet: fn(&str) -> bool) -> Result<Publication, String> {
     let r: ReponseRelease = serde_json::from_str(json).map_err(|e| format!("réponse de GitHub illisible ({e})"))?;
     let version = Version::parser(&r.tag_name).ok_or_else(|| format!("étiquette de version inattendue : « {} »", r.tag_name))?;
-    let paquet = r.assets.iter().find(|a| a.name.ends_with(".deb")).map(|a| a.browser_download_url.clone());
+    let paquet = r.assets.iter().find(|a| est_paquet(&a.name)).map(|a| a.browser_download_url.clone());
     let date = r.published_at.as_deref().map(|d| d.chars().take(10).collect());
     Ok(Publication { version, page: r.html_url, paquet, date })
 }
@@ -159,6 +165,21 @@ mod tests {
     }
 
     #[test]
+    fn paquet_selon_le_systeme() {
+        let json = r#"{"tag_name":"v0.3.0","html_url":"https://x","assets":[
+            {"name":"vocalise_0.3.0_amd64.deb","browser_download_url":"https://x/a.deb"},
+            {"name":"vocalise_0.3.0_windows_x64_setup.exe","browser_download_url":"https://x/b.exe"}]}"#;
+        let deb = parser_publication_pour(json, |n| n.ends_with(".deb")).unwrap();
+        assert_eq!(deb.paquet.as_deref(), Some("https://x/a.deb"));
+        let exe = parser_publication_pour(json, |n| n.ends_with("_setup.exe")).unwrap();
+        assert_eq!(exe.paquet.as_deref(), Some("https://x/b.exe"));
+        // Le critère du système courant reconnaît le bon fichier.
+        let ici = parser_publication(json).unwrap();
+        let attendu = if crate::systeme::WINDOWS { "https://x/b.exe" } else { "https://x/a.deb" };
+        assert_eq!(ici.paquet.as_deref(), Some(attendu));
+    }
+
+    #[test]
     fn reponse_sans_paquet_ni_date() {
         let p = parser_publication(r#"{"tag_name":"v0.2.1","html_url":"https://x"}"#).unwrap();
         assert_eq!(p.version, Version(0, 2, 1));
@@ -188,7 +209,10 @@ mod tests {
         // avec le paquet .deb joint, et ne jamais être « plus récente » qu'une version future.
         let d = derniere_publication(DEPOT).unwrap().expect("le dépôt public a une publication");
         println!("dernière publication de {DEPOT} : {d:?}");
-        assert!(d.paquet.as_deref().is_some_and(|p| p.ends_with(".deb")));
+        if !crate::systeme::WINDOWS {
+            // L'installateur Windows n'est joint qu'à partir de la première version Windows.
+            assert!(d.paquet.as_deref().is_some_and(|p| p.ends_with(".deb")));
+        }
         assert!(plus_recente(d.clone(), Version(0, 0, 0)).is_some(), "0.0.0 doit voir la mise à jour");
         assert_eq!(plus_recente(d, Version(99, 0, 0)), None);
         let r = verifier(DEPOT).unwrap();

@@ -6,6 +6,7 @@ use crate::alltalk;
 use crate::app::{App, EtatServeur};
 use crate::diagnostic::Gravite;
 use crate::maj;
+use crate::systeme;
 use crate::paths;
 use eframe::egui::{self, Align, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui};
 use std::path::{Path, PathBuf};
@@ -91,10 +92,11 @@ fn carte_serveur(app: &mut App, ui: &mut Ui) {
             match etat {
                 EtatServeur::Arrete => {
                     let script_ok = app.cfg.start_script().exists();
+                    let raison = format!("{} introuvable : vérifiez le dossier d'AllTalk ci-dessous.", systeme::LANCEUR_ALLTALK);
                     if Bouton::principal("Démarrer AllTalk")
                         .icone("▶")
                         .actif(script_ok)
-                        .raison("start_alltalk.sh introuvable : vérifiez le dossier d'AllTalk ci-dessous.")
+                        .raison(&raison)
                         .ui(ui)
                         .clicked()
                     {
@@ -185,7 +187,7 @@ fn carte_dossiers(app: &mut App, ui: &mut Ui) {
         ui.add_space(2.0);
 
         let alltalk_dir = app.cfg.alltalk_dir.clone();
-        match ligne_dossier(ui, "Dossier d'AllTalk", "Contient start_alltalk.sh et le dossier voices/.", &alltalk_dir, true) {
+        match ligne_dossier(ui, "Dossier d'AllTalk", &format!("Contient {} et le dossier voices.", systeme::LANCEUR_ALLTALK), &alltalk_dir, true) {
             Some(ActionDossier::Choisir) => {
                 if let Some(d) = choisir_dossier("Dossier d'installation d'AllTalk", &alltalk_dir) {
                     app.cfg.alltalk_dir = d;
@@ -201,7 +203,7 @@ fn carte_dossiers(app: &mut App, ui: &mut Ui) {
             None => {}
         }
         if !app.cfg.start_script().exists() {
-            widgets::encadre(ui, Ton::Avert, "start_alltalk.sh est introuvable dans ce dossier : Vocalise ne pourra pas démarrer AllTalk.");
+            widgets::encadre(ui, Ton::Avert, &format!("{} est introuvable dans ce dossier : Vocalise ne pourra pas démarrer AllTalk.", systeme::LANCEUR_ALLTALK));
         }
         ui.add_space(6.0);
 
@@ -319,10 +321,10 @@ fn carte_mises_a_jour(app: &mut App, ui: &mut Ui) {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     let quand = pub_.date.as_deref().map(|d| format!(", publiée le {}", date_lisible(d))).unwrap_or_default();
                     ui.label(RichText::new(format!("Version {} disponible{quand}.", pub_.version)).font(theme::police_forte(14.0)).color(couleur));
-                    widgets::secondaire(ui, "Téléchargez le paquet puis installez-le : sudo apt install ./vocalise_<version>_amd64.deb");
+                    widgets::secondaire(ui, systeme::CONSIGNE_PAQUET);
                     ui.horizontal(|ui| {
                         if let Some(paquet) = &pub_.paquet {
-                            if Bouton::principal("Télécharger le paquet .deb").petit().ui(ui).clicked() {
+                            if Bouton::principal(systeme::BOUTON_PAQUET).petit().ui(ui).clicked() {
                                 lien = Some(paquet.clone());
                             }
                         }
@@ -490,7 +492,7 @@ fn carte_diagnostic(app: &mut App, ui: &mut Ui) {
                                     .desired_width(l)
                                     .margin(Margin::symmetric(10, 8)),
                             )
-                            .on_hover_text("Commande à coller dans un terminal");
+                            .on_hover_text(format!("Commande à coller dans {}", systeme::TERMINAL));
                             if Bouton::secondaire("Copier").petit().infobulle("Copier la commande dans le presse-papiers").ui(ui).clicked() {
                                 action = Some(ActionDiag::Copier(cmd.clone()));
                             }
@@ -525,7 +527,7 @@ fn carte_diagnostic(app: &mut App, ui: &mut Ui) {
         Some(ActionDiag::Lien(l)) => paths::ouvrir_url(l),
         Some(ActionDiag::Copier(c)) => {
             ui.ctx().copy_text(c);
-            app.succes("Commande copiée : collez-la dans un terminal (Ctrl+Maj+V).");
+            app.succes(format!("Commande copiée : collez-la dans {} ({}).", systeme::TERMINAL, systeme::COLLER));
         }
         Some(ActionDiag::ConfigurerXtts) => app.configurer_xtts(),
         Some(ActionDiag::Redemarrer) => {

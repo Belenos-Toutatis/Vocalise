@@ -8,15 +8,22 @@ Usage :
   vocalise --garder -f partie1.txt -o p1.wav   # plusieurs fichiers d'affilée…
   vocalise --arreter                           # …puis libérer la mémoire
 
-Les textes longs sont découpés par phrases (limite API 2000 caractères),
-générés morceau par morceau puis concaténés avec sox.
+Les textes longs sont découpés par phrases (limite API 2000 caractères), générés morceau par
+morceau puis assemblés en un seul wav.
 
 Gestion du serveur : si AllTalk ne tourne pas, vocalise le démarre (~1 min) et l'arrête à la fin
 pour libérer la RAM et la VRAM, sauf avec --garder. Un AllTalk lancé par quelqu'un d'autre
 (interface graphique, terminal) n'est jamais arrêté. Plusieurs vocalise simultanés partagent le
 serveur : seul le dernier à finir l'arrête.
+
+Fonctionne sous Linux et sous Windows (bibliothèque standard de Python uniquement). Dossier
+d'AllTalk : variable ALLTALK_DIR, sinon celui des réglages de vocalise-gui, sinon ~/alltalk_tts.
 """
-import argparse, fcntl, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request, urllib.parse, urllib.error
+import argparse, json, os, re, shutil, signal, struct, subprocess, sys, tempfile, time, urllib.request, urllib.parse, urllib.error
+
+WINDOWS = os.name == "nt"
+if not WINDOWS:
+    import fcntl
 
 API = "http://127.0.0.1:7851"
 # Longueur maximale d'un morceau (limite d'AllTalk : 2000). La VRAM nécessaire croît avec la
@@ -24,8 +31,30 @@ API = "http://127.0.0.1:7851"
 # échoue toujours, et dès ~500 quand le bureau occupe plus de VRAM. Un morceau qui échoue quand
 # même est recoupé en deux (generer_adaptatif).
 MAX = 400
-ALLTALK = os.path.expanduser("~/alltalk_tts")
-ETAT = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vocalise")
+
+def dossier_config():
+    if WINDOWS:
+        return os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming")
+    return os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+
+def dossier_alltalk():
+    if os.environ.get("ALLTALK_DIR"):
+        return os.path.abspath(os.environ["ALLTALK_DIR"])
+    try:
+        with open(os.path.join(dossier_config(), "vocalise", "config.json"), encoding="utf-8") as f:
+            d = json.load(f).get("alltalk_dir")
+        if d and os.path.isdir(d):
+            return os.path.abspath(d)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return os.path.join(os.path.expanduser("~"), "alltalk_tts")
+
+ALLTALK = dossier_alltalk()
+LANCEUR = "start_alltalk.bat" if WINDOWS else "start_alltalk.sh"
+if WINDOWS:
+    ETAT = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"), "vocalise")
+else:
+    ETAT = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "vocalise")
 PIDFILE = os.path.join(ETAT, "alltalk.pid")    # présent = AllTalk lancé par vocalise
 VERROU = os.path.join(ETAT, "utilisation.lock")  # verrou partagé tant qu'un vocalise s'en sert
 JOURNAL = os.path.join(ETAT, "alltalk.log")
@@ -39,20 +68,40 @@ def est_pret():
     except (urllib.error.URLError, ConnectionError, OSError):
         return False
 
-def groupe_vivant(pgid):
-    try:
-        os.killpg(pgid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+# ------------------------------------------------------------------ processus (Linux / Windows)
+
+if WINDOWS:
+    import ctypes
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    CREATE_NO_WINDOW = 0x08000000
+
+    def processus_vivant(pid):
+        """Sans os.kill : sous Windows, il terminerait le processus."""
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+else:
+    def processus_vivant(pgid):
+        """Le groupe de processus existe-t-il encore ?"""
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
 
 def pid_vocalise():
-    """Groupe de processus d'un AllTalk lancé par vocalise et encore vivant, sinon None."""
+    """Processus (Linux : groupe) d'un AllTalk lancé par vocalise et encore vivant, sinon None."""
     try:
         pid = int(open(PIDFILE).read().strip())
     except (OSError, ValueError):
         return None
-    if groupe_vivant(pid):
+    if processus_vivant(pid):
         return pid
     try:
         os.remove(PIDFILE)
@@ -62,6 +111,17 @@ def pid_vocalise():
 
 def alltalk_en_cours():
     """Un AllTalk démarre-t-il ou tourne-t-il déjà (lancé par n'importe qui) ?"""
+    if WINDOWS:
+        # Un python.exe de l'environnement d'AllTalk qui exécute script.py.
+        dossier = ALLTALK.replace("'", "''")
+        ps = ("@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { "
+              f"$_.CommandLine -like '*script.py*' -and $_.ExecutablePath -like '{dossier}*' }}).Count")
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True,
+                               timeout=20, creationflags=CREATE_NO_WINDOW)
+            return r.stdout.strip() not in ("", "0")
+        except (OSError, subprocess.SubprocessError):
+            return False
     for d in os.listdir("/proc"):
         if not d.isdigit():
             continue
@@ -77,36 +137,49 @@ def alltalk_en_cours():
 
 def demarrer():
     os.makedirs(ETAT, exist_ok=True)
-    script = os.path.join(ALLTALK, "start_alltalk.sh")
+    script = os.path.join(ALLTALK, LANCEUR)
     if not os.path.isfile(script):
-        sys.exit(f"AllTalk est introuvable : {script} n'existe pas.")
+        sys.exit(f"AllTalk est introuvable : {script} n'existe pas (variable ALLTALK_DIR ou réglages de vocalise-gui).")
     info("AllTalk ne tourne pas : démarrage (environ une minute)…")
     with open(JOURNAL, "ab") as log:
         # Sortie non tamponnée : les erreurs du moteur arrivent tout de suite dans le journal.
         # (Pas de PYTORCH_CUDA_ALLOC_CONF=expandable_segments : essayé, il fait échouer presque
         # toutes les générations sur la GTX 1650.)
         env = dict(os.environ, PYTHONUNBUFFERED="1")
-        p = subprocess.Popen(["bash", "-c", f"cd '{ALLTALK}' && exec ./start_alltalk.sh"], env=env,
-                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        if WINDOWS:
+            p = subprocess.Popen(["cmd", "/D", "/C", LANCEUR], cwd=ALLTALK, env=env,
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                 creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
+        else:
+            p = subprocess.Popen(["bash", "-c", f"cd '{ALLTALK}' && exec ./start_alltalk.sh"], env=env,
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
     tmp = PIDFILE + ".tmp"
     with open(tmp, "w") as f:
         f.write(str(p.pid))
-    os.rename(tmp, PIDFILE)
+    os.replace(tmp, PIDFILE)
     return p
 
-def arreter(pgid):
-    """Ctrl-C au groupe d'AllTalk, puis SIGTERM, puis SIGKILL : la VRAM est rendue à la fin."""
+def arreter(pid):
+    """Linux : Ctrl-C au groupe d'AllTalk, puis SIGTERM, puis SIGKILL. Windows : fin de l'arbre de
+    processus (taskkill /T /F). La mémoire est rendue à la fin."""
     info("Arrêt d'AllTalk (libération de la mémoire)…")
-    for sig, delai in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            break
-        fin = time.time() + delai
-        while time.time() < fin and groupe_vivant(pgid):
+    if WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       creationflags=CREATE_NO_WINDOW)
+        fin = time.time() + 15
+        while time.time() < fin and processus_vivant(pid):
             time.sleep(0.2)
-        if not groupe_vivant(pgid):
-            break
+    else:
+        for sig, delai in ((signal.SIGINT, 10), (signal.SIGTERM, 5), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                break
+            fin = time.time() + delai
+            while time.time() < fin and processus_vivant(pid):
+                time.sleep(0.2)
+            if not processus_vivant(pid):
+                break
     try:
         os.remove(PIDFILE)
     except OSError:
@@ -122,54 +195,155 @@ def attendre_pret(proc=None, timeout=300):
         time.sleep(2)
     sys.exit(f"AllTalk ne répond toujours pas sur {API} après {timeout} s" + (f" : voir {JOURNAL}" if proc else ""))
 
+# ------------------------------------------------------------------ verrous entre vocalise simultanés
+# Linux : verrou fcntl partagé pendant l'utilisation, exclusif pour arrêter.
+# Windows : un fichier par vocalise en cours dans ETAT/utilisateurs/, et verrou msvcrt du démarrage.
+
+class Utilisation:
+    def __init__(self):
+        os.makedirs(ETAT, exist_ok=True)
+        if WINDOWS:
+            self.dossier = os.path.join(ETAT, "utilisateurs")
+            os.makedirs(self.dossier, exist_ok=True)
+            self.moi = os.path.join(self.dossier, str(os.getpid()))
+            open(self.moi, "w").close()
+        else:
+            self.f = open(VERROU, "a")
+            fcntl.flock(self.f, fcntl.LOCK_SH)
+
+    def seul(self):
+        """Aucun autre vocalise ne se sert d'AllTalk ? (Linux : passe alors en verrou exclusif.)"""
+        if WINDOWS:
+            for nom in os.listdir(self.dossier):
+                chemin = os.path.join(self.dossier, nom)
+                if chemin == self.moi:
+                    continue
+                if nom.isdigit() and processus_vivant(int(nom)):
+                    return False
+                try:
+                    os.remove(chemin)  # reste d'un vocalise disparu
+                except OSError:
+                    pass
+            return True
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+
+    def fermer(self):
+        if WINDOWS:
+            try:
+                os.remove(self.moi)
+            except OSError:
+                pass
+        else:
+            self.f.close()
+
+class VerrouDemarrage:
+    """Sérialise le démarrage : deux vocalise simultanés ne lancent pas deux serveurs."""
+    def __enter__(self):
+        os.makedirs(ETAT, exist_ok=True)
+        self.f = open(VERROU + ".demarrage", "a+")
+        if WINDOWS:
+            import msvcrt
+            while True:
+                try:
+                    self.f.seek(0)
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.5)
+        else:
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_):
+        self.f.close()  # libère le verrou
+        return False
+
 def preparer_serveur():
-    """Rend AllTalk prêt ; renvoie le verrou d'utilisation (partagé) à garder ouvert."""
-    os.makedirs(ETAT, exist_ok=True)
-    verrou = open(VERROU, "a")
-    fcntl.flock(verrou, fcntl.LOCK_SH)
+    """Rend AllTalk prêt ; renvoie l'objet d'utilisation à fermer après usage."""
+    u = Utilisation()
     if est_pret():
-        return verrou
-    # Le démarrage est sérialisé : deux vocalise simultanés ne lancent pas deux serveurs.
-    with open(VERROU + ".demarrage", "a") as d:
-        fcntl.flock(d, fcntl.LOCK_EX)
+        return u
+    with VerrouDemarrage():
         if est_pret():
-            return verrou
+            return u
         if alltalk_en_cours():
             info("AllTalk est en cours de démarrage : attente…")
             attendre_pret()
         else:
             attendre_pret(demarrer())
-    return verrou
+    return u
 
-def liberer_serveur(verrou, garder):
+def liberer_serveur(u, garder):
     """Arrête AllTalk s'il a été lancé par vocalise, sauf --garder ou autre vocalise en cours."""
-    pgid = pid_vocalise()
-    if garder or pgid is None:
-        verrou.close()
-        return
-    try:
-        fcntl.flock(verrou, fcntl.LOCK_EX | fcntl.LOCK_NB)  # échoue si un autre vocalise travaille
-    except BlockingIOError:
-        verrou.close()
-        return
-    arreter(pgid)
-    verrou.close()
+    pid = pid_vocalise()
+    if not garder and pid is not None and u.seul():
+        arreter(pid)
+    u.fermer()
 
 def commande_arreter():
-    pgid = pid_vocalise()
-    if pgid is not None:
-        os.makedirs(ETAT, exist_ok=True)
-        with open(VERROU, "a") as v:
-            try:
-                fcntl.flock(v, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+    pid = pid_vocalise()
+    if pid is not None:
+        u = Utilisation()
+        try:
+            if not u.seul():
                 sys.exit("Un autre vocalise utilise AllTalk : il l'arrêtera en finissant.")
-            arreter(pgid)
+            arreter(pid)
+        finally:
+            u.fermer()
         print("AllTalk arrêté.")
     elif est_pret() or alltalk_en_cours():
         print("AllTalk tourne mais n'a pas été lancé par vocalise (interface graphique ou terminal) : laissé tel quel.")
     else:
         print("AllTalk ne tourne pas.")
+
+# ------------------------------------------------------------------ assemblage des wav (sans sox)
+
+def lire_wav(chemin):
+    """(octets du chunk fmt, données audio brutes) ; gère les chunks fact/PEAK/LIST d'AllTalk."""
+    with open(chemin, "rb") as f:
+        b = f.read()
+    if b[:4] != b"RIFF" or b[8:12] != b"WAVE":
+        raise ValueError(f"{chemin} n'est pas un fichier wav")
+    i, fmt, data = 12, None, None
+    while i + 8 <= len(b):
+        ident, taille = b[i:i + 4], struct.unpack("<I", b[i + 4:i + 8])[0]
+        corps = b[i + 8:i + 8 + taille]
+        if ident == b"fmt ":
+            fmt = corps
+        elif ident == b"data":
+            data = corps
+        i += 8 + taille + (taille & 1)
+    if fmt is None or data is None:
+        raise ValueError(f"{chemin} : wav incomplet")
+    return fmt, data
+
+def assembler(fichiers, sortie):
+    """Met bout à bout des wav de même format (ceux d'AllTalk : float 32 bits, 24 kHz, mono)."""
+    fmt, morceaux = None, []
+    for c in fichiers:
+        f, d = lire_wav(c)
+        if fmt is None:
+            fmt = f
+        elif f[:16] != fmt[:16]:
+            raise ValueError(f"{c} n'a pas le même format que les autres morceaux")
+        morceaux.append(d)
+    data = b"".join(morceaux)
+    code, canaux, _, _, bloc = struct.unpack("<HHIIH", fmt[:14])
+    chunks = [b"fmt ", struct.pack("<I", len(fmt)), fmt]
+    if code == 3:  # flottant : chunk fact (nombre de trames) attendu
+        chunks += [b"fact", struct.pack("<I", 4), struct.pack("<I", len(data) // max(bloc, 1))]
+    chunks += [b"data", struct.pack("<I", len(data)), data]
+    if len(data) & 1:
+        chunks.append(b"\0")
+    corps = b"WAVE" + b"".join(chunks)
+    tmp = sortie + ".part"
+    with open(tmp, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", len(corps)) + corps)
+    os.replace(tmp, sortie)
 
 def decouper(texte):
     phrases = re.split(r"(?<=[.!?…])\s+", texte.strip())
@@ -256,7 +430,7 @@ def main():
     ap.add_argument("-f", "--fichier", help="fichier texte à lire")
     ap.add_argument("-o", "--sortie", help="wav de sortie")
     ap.add_argument("--voix", default=None,
-                    help="fichier dans ~/alltalk_tts/voices ou 'voiceset:nom' (défaut : voiceset:emmanuel s'il existe, sinon emmanuel.wav)")
+                    help="fichier du dossier voices d'AllTalk ou 'voiceset:nom' (défaut : voiceset:emmanuel s'il existe, sinon emmanuel.wav)")
     ap.add_argument("--langue", default="fr")
     ap.add_argument("--vitesse", type=float, default=1.0)
     ap.add_argument("--temperature", type=float, default=0.7)
@@ -281,12 +455,12 @@ def main():
         sys.exit("texte vide")
 
     if a.voix is None:
-        jeu = os.path.expanduser("~/alltalk_tts/voices/xtts_multi_voice_sets/emmanuel")
+        jeu = os.path.join(ALLTALK, "voices", "xtts_multi_voice_sets", "emmanuel")
         a.voix = "voiceset:emmanuel" if os.path.isdir(jeu) and any(f.endswith(".wav") for f in os.listdir(jeu)) else "emmanuel.wav"
     # Un SIGTERM (fin de session, délai dépassé) passe par les blocs finally comme un Ctrl-C.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     try:
-        verrou = preparer_serveur()
+        utilisation = preparer_serveur()
     except BaseException:
         # Interrompu pendant le démarrage : ne pas laisser un AllTalk à moitié chargé.
         pgid = pid_vocalise()
@@ -304,13 +478,13 @@ def main():
             info(f"[{i+1}/{len(morceaux)}] {len(m)} caractères...")
             fichiers += generer_adaptatif(m, generer_morceau)
     finally:
-        liberer_serveur(verrou, a.garder)
+        liberer_serveur(utilisation, a.garder)
     sortie = os.path.abspath(a.sortie)
     os.makedirs(os.path.dirname(sortie), exist_ok=True)
     if len(fichiers) == 1:
         shutil.copy(fichiers[0], sortie)
     else:
-        subprocess.run(["sox", "-V1", *fichiers, sortie], check=True)
+        assembler(fichiers, sortie)
     print(sortie)
 
 if __name__ == "__main__":

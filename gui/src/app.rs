@@ -37,6 +37,7 @@ pub fn lancer(opts: Options) -> eframe::Result {
     if opts.capture.is_some() {
         // Mode capture : fenêtre via X11 (XWayland) et au-dessus des autres. Sous Wayland, une
         // fenêtre recouverte n'est plus redessinée du tout et la capture se figeait (voir ui/capture).
+        #[cfg(target_os = "linux")]
         if std::env::var("DISPLAY").map(|d| !d.is_empty()).unwrap_or(false) {
             std::env::remove_var("WAYLAND_DISPLAY");
             std::env::remove_var("WAYLAND_SOCKET");
@@ -45,6 +46,7 @@ pub fn lancer(opts: Options) -> eframe::Result {
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let r = eframe::run_native("Vocalise", options, Box::new(move |cc| Ok(Box::new(App::new(cc, opts)))));
+    #[cfg(target_os = "linux")]
     if let Err(e) = &r {
         if !AFFICHE.load(Ordering::Relaxed) && std::env::var_os("VOCALISE_LOGICIEL").is_none() {
             // La carte graphique a refusé le contexte OpenGL (mémoire vidéo saturée, par exemple
@@ -64,6 +66,7 @@ pub fn aujourd_hui() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn relancer_en_logiciel() -> eframe::Result {
     let exe = std::env::current_exe().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let mut cmd = std::process::Command::new(exe);
@@ -838,9 +841,7 @@ impl App {
         let mut d = rfd::FileDialog::new()
             .set_title("Ouvrir un texte à synthétiser")
             .add_filter("Texte (.txt, .md)", &["txt", "md"]);
-        if let Ok(home) = std::env::var("HOME") {
-            d = d.set_directory(home);
-        }
+        d = d.set_directory(crate::systeme::dossier_personnel());
         if let Some(p) = d.pick_file() {
             self.ouvrir_texte(&p);
         }

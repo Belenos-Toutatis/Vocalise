@@ -205,12 +205,14 @@ fn abreger(s: &str, max: usize) -> String {
     }
 }
 
+#[cfg(unix)]
 /// Entoure de guillemets simples pour le shell (échappe les guillemets simples internes).
 fn quote_sh(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Envoie un signal au groupe de processus `pid` via la commande `kill`.
+#[cfg(unix)]
 fn signaler_groupe(signal: &str, pid: u32) -> bool {
     std::process::Command::new("kill")
         .arg(signal)
@@ -224,11 +226,53 @@ fn signaler_groupe(signal: &str, pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Commande qui lance AllTalk depuis son dossier.
+#[cfg(unix)]
+fn commande_lanceur(alltalk_dir: &Path) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-lc")
+        .arg(format!("cd {} && exec ./start_alltalk.sh", quote_sh(&alltalk_dir.to_string_lossy())))
+        .process_group(0);
+    cmd
+}
+
+#[cfg(windows)]
+fn commande_lanceur(alltalk_dir: &Path) -> std::process::Command {
+    use crate::systeme::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/D", "/C", crate::systeme::LANCEUR_ALLTALK])
+        .current_dir(alltalk_dir)
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    cmd
+}
+
+/// Termine un processus et tous ses descendants (`taskkill /PID <pid> /T /F`).
+#[cfg(windows)]
+fn tuer_arbre(pid: u32) {
+    let _ = crate::systeme::commande("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 impl Drop for Serveur {
     /// Ne jamais laisser AllTalk orphelin : si le processus tourne encore à la destruction,
     /// SIGTERM au groupe, attente de 3 s au plus, puis SIGKILL.
+    /// Sous Windows : `taskkill /T /F` sur l'arbre de processus.
     fn drop(&mut self) {
         let pid = self.child.id();
+        #[cfg(windows)]
+        if matches!(self.child.try_wait(), Ok(None)) {
+            tuer_arbre(pid);
+            self.attendre_fin(Some(Duration::from_secs(5)));
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        #[cfg(unix)]
         if matches!(self.child.try_wait(), Ok(None)) {
             signaler_groupe("-TERM", pid);
             self.attendre_fin(Some(Duration::from_secs(3)));
@@ -246,12 +290,12 @@ pub struct Serveur {
 }
 
 impl Serveur {
-    /// `bash -lc "cd <alltalk_dir> && exec ./start_alltalk.sh"`, stdout+stderr → `journal`,
-    /// `process_group(0)`. Erreur si le script n'existe pas.
+    /// Linux : `bash -lc "cd <alltalk_dir> && exec ./start_alltalk.sh"` dans son propre groupe de
+    /// processus. Windows : `cmd /C start_alltalk.bat` dans le dossier d'AllTalk, sans fenêtre,
+    /// nouveau groupe de processus. stdout+stderr → `journal`. Erreur si le lanceur n'existe pas.
     pub fn demarrer(alltalk_dir: &Path, journal: &Path) -> Result<Serveur, String> {
-        use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
-        let script = alltalk_dir.join("start_alltalk.sh");
+        use std::process::Stdio;
+        let script = alltalk_dir.join(crate::systeme::LANCEUR_ALLTALK);
         if !script.is_file() {
             return Err(format!(
                 "AllTalk est introuvable : le fichier {} n'existe pas. Vérifiez le dossier d'AllTalk dans les réglages.",
@@ -267,10 +311,8 @@ impl Serveur {
             .open(journal)
             .map_err(|e| format!("Impossible d'ouvrir le journal {} : {e}", journal.display()))?;
         let log_err = log.try_clone().map_err(|e| format!("Impossible d'ouvrir le journal : {e}"))?;
-        let commande = format!("cd {} && exec ./start_alltalk.sh", quote_sh(&alltalk_dir.to_string_lossy()));
-        let child = Command::new("bash")
-            .arg("-lc")
-            .arg(commande)
+        let mut cmd = commande_lanceur(alltalk_dir);
+        let child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
@@ -278,7 +320,6 @@ impl Serveur {
             // PYTORCH_CUDA_ALLOC_CONF=expandable_segments : essayé, il fait échouer presque
             // toutes les générations sur la GTX 1650.)
             .env("PYTHONUNBUFFERED", "1")
-            .process_group(0)
             .spawn()
             .map_err(|e| format!("Impossible de lancer AllTalk : {e}"))?;
         Ok(Serveur { child })
@@ -288,6 +329,21 @@ impl Serveur {
     /// ensuite SIGKILL du groupe).
     pub fn arreter(&mut self) {
         let pid = self.child.id();
+        #[cfg(windows)]
+        {
+            // Pas de Ctrl-C possible vers un processus sans console visible : on termine l'arbre
+            // (cmd, python script.py et le serveur du moteur). Le système rend alors la mémoire.
+            if !self.attendre_fin(None) {
+                tuer_arbre(pid);
+                if !self.attendre_fin(Some(Duration::from_secs(10))) {
+                    let _ = self.child.kill();
+                }
+            }
+            let _ = self.child.wait();
+            return;
+        }
+        #[cfg(unix)]
+        {
         if !self.attendre_fin(None) {
             signaler_groupe("-INT", pid);
             if !self.attendre_fin(Some(Duration::from_secs(8))) {
@@ -304,6 +360,7 @@ impl Serveur {
         if matches!(self.child.try_wait(), Ok(None)) || signaler_groupe("-0", pid) {
             signaler_groupe("-KILL", pid);
             let _ = self.child.wait();
+        }
         }
     }
 

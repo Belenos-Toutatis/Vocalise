@@ -212,8 +212,8 @@ impl Default for Format {
 
 /// Vrai si la commande ffmpeg est disponible (`ffmpeg -version`).
 pub fn ffmpeg_disponible() -> bool {
-    use std::process::{Command, Stdio};
-    Command::new("ffmpeg")
+    use std::process::Stdio;
+    crate::systeme::commande("ffmpeg")
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -226,7 +226,7 @@ pub fn ffmpeg_disponible() -> bool {
 /// Convertit un wav vers `format` à l'emplacement `sortie` (l'extension est forcée d'après le
 /// format). Wav → copie simple. Autres formats → ffmpeg. Retourne le chemin réellement écrit.
 pub fn convertir(wav: &Path, sortie: &Path, format: Format) -> Result<PathBuf, String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let sortie = sortie.with_extension(format.extension());
     if let Some(parent) = sortie.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
@@ -250,7 +250,7 @@ pub fn convertir(wav: &Path, sortie: &Path, format: Format) -> Result<PathBuf, S
     if wav == sortie {
         return Err("Le fichier de sortie ne peut pas être le fichier source.".into());
     }
-    let res = Command::new("ffmpeg")
+    let res = crate::systeme::commande("ffmpeg")
         .args(["-y", "-loglevel", "error", "-i"])
         .arg(wav)
         .args(options)
@@ -392,6 +392,7 @@ pub fn concatener(fichiers: &[PathBuf], pause_s: f32) -> Result<Wav, String> {
 }
 
 /// Description du format lu dans les premiers octets d'un wav (éventuellement inachevé).
+#[cfg_attr(windows, allow(dead_code))]
 struct EnteteBrut {
     /// 1 = entier, 3 = flottant.
     code: u16,
@@ -405,6 +406,7 @@ struct EnteteBrut {
 /// Analyse l'en-tête RIFF dans `tete` (les premiers Ko du fichier) en parcourant les chunks
 /// depuis l'octet 12 : `fmt ` de 16, 18 ou 40 octets (WAVE_FORMAT_EXTENSIBLE), chunks `LIST`, etc.
 /// Repli : en-tête canonique de 44 octets, PCM 16 bits mono 22050 Hz (réglages de pw-record).
+#[cfg_attr(windows, allow(dead_code))]
 fn analyser_entete(tete: &[u8]) -> EnteteBrut {
     let defaut = EnteteBrut { code: 1, canaux: 1, rate: 22_050, bits: 16, data: 44 };
     if tete.len() < 12 || &tete[0..4] != b"RIFF" || &tete[8..12] != b"WAVE" {
@@ -445,6 +447,7 @@ fn analyser_entete(tete: &[u8]) -> EnteteBrut {
 /// L'en-tête est analysé (chunks RIFF, 4 Ko lus au plus) ; formats gérés : entier 16, 24 ou
 /// 32 bits et flottant 32 bits, multi-canal compris. None si le fichier n'existe pas encore,
 /// si le format n'est pas géré, ou s'il y a moins de la moitié de la fenêtre demandée.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn niveau_direct(p: &Path, fenetre_s: f32) -> Option<f32> {
     let mut f = std::fs::File::open(p).ok()?;
     let taille = f.metadata().ok()?.len();
