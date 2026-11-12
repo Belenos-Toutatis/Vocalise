@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn parser_reponse_github() {
-        let p = parser_publication(REPONSE).unwrap();
+        let p = parser_publication_pour(REPONSE, |n| n.ends_with(".deb")).unwrap();
         assert_eq!(p.version, Version(0, 3, 0));
         assert_eq!(p.page, "https://github.com/Belenos-Toutatis/Vocalise/releases/tag/v0.3.0");
         assert_eq!(p.paquet.as_deref(), Some("https://x/vocalise_0.3.0_amd64.deb"));
