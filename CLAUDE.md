@@ -25,8 +25,17 @@ ou `.bat`, ouverture, commandes d'installation, critère du paquet de mise à jo
 `#[cfg(windows)]` : `recorder`/`player` s'appuient sur `wasapi.rs` (cpal, dépendance Windows
 seulement), où **tout** l'audio passe par un unique thread permanent : les objets COM de WASAPI
 utilisés depuis des threads éphémères provoquaient une violation d'accès (vu sur GitHub Actions), `alltalk::Serveur` (`cmd /C
-start_alltalk.bat` sans console, arrêt par `taskkill /T /F`), `app::lancer` (rendu logiciel Mesa et
+<alltalk_dir>\start_alltalk.bat` sans console, arrêt par `taskkill /T /F`), `app::lancer` (rendu logiciel Mesa et
 mode X11 réservés à Linux). Sous Linux, l'audio reste PipeWire : ne pas basculer sur cpal.
+
+Le `.bat` est toujours lancé par son **chemin complet** : Claude Code définit
+`NoDefaultCurrentDirectoryInExePath=1` (hérité par `vocalise` et l'application), et `cmd` ne trouve
+alors plus un nom seul dans le dossier courant (la CI définit cette variable pour les tests).
+Dans `windows/vocalise.cmd`, pas d'appel dans un bloc entre parenthèses : `%errorlevel%` y est lu
+avant l'appel et le code de sortie était toujours 0. Au premier démarrage, AllTalk demande un modèle
+et, sans réponse en 60 s, réécrit `tts_engines.json` avec Piper : remettre xtts ensuite.
+Surface Pro 9 (i5/i7, processeur seul) : chargement de XTTS ~15 s, génération ~5 fois plus lente
+que le temps réel, ~1 min 45 au total pour une phrase avec démarrage et arrêt d'AllTalk.
 
 ```bash
 cargo zigbuild --target x86_64-pc-windows-gnu   # vérifie la compilation Windows depuis Linux

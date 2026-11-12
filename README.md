@@ -159,7 +159,10 @@ fonctionnent pas correctement.
    ```
 
    Choisissez l'installation autonome (« Standalone »), puis lancez `start_alltalk.bat` une
-   première fois pour télécharger le modèle XTTS. Sans carte NVIDIA, XTTS tourne sur le
+   première fois pour télécharger le modèle XTTS : à la question « Enter your choice 1-4 », tapez
+   **3** (`xtts - xttsv2_2.0.3`) dans les 60 s. Sans réponse, AllTalk installe Piper et l'inscrit
+   comme moteur dans `tts_engines.json` (le diagnostic de Vocalise propose alors **Configurer
+   XTTS**). Le menu d'installation n'a pas de mode « processeur » : sans carte NVIDIA, XTTS tourne sur le
    processeur : la synthèse marche, mais plusieurs fois plus lentement qu'avec une carte graphique.
 2. **Vocalise.** Téléchargez `vocalise_<version>_windows_x64_setup.exe` sur la page des
    [publications](https://github.com/Belenos-Toutatis/Vocalise/releases/latest) et lancez-le.

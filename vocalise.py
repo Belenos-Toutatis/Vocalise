@@ -147,7 +147,9 @@ def demarrer():
         # toutes les générations sur la GTX 1650.)
         env = dict(os.environ, PYTHONUNBUFFERED="1")
         if WINDOWS:
-            p = subprocess.Popen(["cmd", "/D", "/C", LANCEUR], cwd=ALLTALK, env=env,
+            # Chemin complet : avec NoDefaultCurrentDirectoryInExePath (défini par Claude Code),
+            # cmd ne cherche plus un .bat nommé seul dans le dossier courant.
+            p = subprocess.Popen(["cmd", "/D", "/C", script], cwd=ALLTALK, env=env,
                                  stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                  creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
         else:
@@ -387,14 +389,25 @@ def generer(texte, voix, langue, vitesse, temperature, nom, essais=2):
             time.sleep(2)
     else:
         raise EchecGeneration(json.dumps(rep, ensure_ascii=False))
+    # Réponse sans fichier audio (moteur mal configuré, modèle absent…) : échec définitif, inutile
+    # de recouper. Sans ce contrôle, l'URL vide menait à la page web d'AllTalk, écrite en « .wav ».
+    pas_de_wav = ("AllTalk n'a pas produit de fichier audio (réponse : "
+                  + json.dumps(rep, ensure_ascii=False) + f"). Voir {JOURNAL} ; le moteur doit être xtts"
+                  + " (engine_loaded dans system/tts_engines/tts_engines.json).")
     chemin = rep.get("output_file_path")
     if not chemin or not os.path.exists(chemin):
         # repli : récupérer le fichier par HTTP
-        url = rep.get("output_file_url", "")
+        url = rep.get("output_file_url") or ""
+        if not url:
+            sys.exit(pas_de_wav)
         if not url.startswith("http"):
             url = API + url
         chemin = tempfile.mktemp(suffix=".wav")
         urllib.request.urlretrieve(url, chemin)
+    with open(chemin, "rb") as f:
+        entete = f.read(12)
+    if entete[:4] != b"RIFF" or entete[8:12] != b"WAVE":
+        sys.exit(pas_de_wav)
     return chemin
 
 MIN_COUPE = 40  # en dessous, on ne coupe plus : l'échec est définitif

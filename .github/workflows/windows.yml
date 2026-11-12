@@ -33,6 +33,9 @@ jobs:
 
       - name: Tests
         working-directory: gui
+        # Comme dans une session Claude Code : cmd ne cherche plus un .bat dans le dossier courant.
+        env:
+          NoDefaultCurrentDirectoryInExePath: "1"
         run: cargo test --locked
 
       - name: Compilation

@@ -241,8 +241,11 @@ fn commande_lanceur(alltalk_dir: &Path) -> std::process::Command {
 fn commande_lanceur(alltalk_dir: &Path) -> std::process::Command {
     use crate::systeme::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
     use std::os::windows::process::CommandExt;
+    // Chemin complet du .bat : avec NoDefaultCurrentDirectoryInExePath (défini par Claude Code et
+    // hérité par ses sous-processus), cmd ne cherche plus un nom seul dans le dossier courant.
     let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/D", "/C", crate::systeme::LANCEUR_ALLTALK])
+    cmd.args(["/D", "/C"])
+        .arg(alltalk_dir.join(crate::systeme::LANCEUR_ALLTALK))
         .current_dir(alltalk_dir)
         .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
     cmd
@@ -291,7 +294,7 @@ pub struct Serveur {
 
 impl Serveur {
     /// Linux : `bash -lc "cd <alltalk_dir> && exec ./start_alltalk.sh"` dans son propre groupe de
-    /// processus. Windows : `cmd /C start_alltalk.bat` dans le dossier d'AllTalk, sans fenêtre,
+    /// processus. Windows : `cmd /C <alltalk_dir>\start_alltalk.bat` dans le dossier d'AllTalk, sans fenêtre,
     /// nouveau groupe de processus. stdout+stderr → `journal`. Erreur si le lanceur n'existe pas.
     pub fn demarrer(alltalk_dir: &Path, journal: &Path) -> Result<Serveur, String> {
         use std::process::Stdio;
