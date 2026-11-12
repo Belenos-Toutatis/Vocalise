@@ -34,8 +34,8 @@ alors plus un nom seul dans le dossier courant (la CI définit cette variable po
 Dans `windows/vocalise.cmd`, pas d'appel dans un bloc entre parenthèses : `%errorlevel%` y est lu
 avant l'appel et le code de sortie était toujours 0. Au premier démarrage, AllTalk demande un modèle
 et, sans réponse en 60 s, réécrit `tts_engines.json` avec Piper : remettre xtts ensuite.
-Surface Pro 9 (i5/i7, processeur seul) : chargement de XTTS ~15 s, génération ~5 fois plus lente
-que le temps réel, ~1 min 45 au total pour une phrase avec démarrage et arrêt d'AllTalk.
+Surface Pro 9 (processeur seul) : chargement de XTTS 13 à 20 s, génération 5 à 7 fois plus lente
+que le temps réel (15 à 20 s pour une phrase de 3 s), ~1 min 40 au total avec démarrage et arrêt.
 
 ```bash
 cargo zigbuild --target x86_64-pc-windows-gnu   # vérifie la compilation Windows depuis Linux
@@ -107,6 +107,12 @@ module `maj` ; tout le reste parle à AllTalk en HTTP local.
   AllTalk n'exploite que **5 fichiers** (tirés au hasard au-delà) et **30 s par fichier**
   (`max_ref_len`). D'où la troncature à 30 s et la jauge « N / 5 ».
 - Les wav de sortie d'AllTalk sont en float 32 bits, 24 kHz, avec chunks `fact`/`PEAK`.
+- `/api/ready` répond avant que `script.py` ait fini de construire l'interface web, qui interroge
+  alors l'API avec un délai de 10 s : une génération plus longue à ce moment-là (processeur seul)
+  fait planter `script.py` (« KeyError: 'srv_current_voices' ») et le serveur avec. Avant de
+  générer, `vocalise.py` attend donc que le port web (7852) réponde, et l'application ne se dit
+  prête qu'à cette condition (`alltalk::pret_a_generer`), sauf si `gradio_interface` est faux
+  dans `confignew.json`.
 - `/api/enginereload` plante (bug AllTalk) : pour changer de moteur, éditer
   `~/alltalk_tts/system/tts_engines/tts_engines.json` (`engine_loaded`, `selected_model`) et redémarrer.
 - VRAM : XTTS occupe ~2 Go et le bureau ~1,5 Go ; la génération échoue souvent (« CUDA out of

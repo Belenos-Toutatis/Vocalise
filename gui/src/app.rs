@@ -508,8 +508,9 @@ impl App {
     fn lancer_sonde(&self) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
+        let alltalk_dir = self.cfg.alltalk_dir.clone();
         thread::spawn(move || loop {
-            let ok = alltalk::pret();
+            let ok = alltalk::pret_a_generer(&alltalk_dir);
             if tx.send(Msg::Sonde(ok)).is_err() {
                 break;
             }

@@ -16,6 +16,41 @@ pub fn pret() -> bool {
     }
 }
 
+/// AllTalk peut-il générer sans risque ? API prête et, si son interface web est activée
+/// (`gradio_interface` de `confignew.json`, vrai par défaut), interface web en service : tant
+/// qu'elle se construit, elle interroge l'API avec un délai de 10 s, et une génération qui occupe
+/// l'API plus longtemps (processeur seul) fait planter script.py, serveur compris
+/// (« KeyError: 'srv_current_voices' »).
+pub fn pret_a_generer(alltalk_dir: &Path) -> bool {
+    if !pret() {
+        return false;
+    }
+    let (active, port) = reglages_web(alltalk_dir);
+    if !active {
+        return true;
+    }
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build();
+    match agent.get(&format!("http://127.0.0.1:{port}/")).call() {
+        Ok(_) | Err(ureq::Error::Status(..)) => true, // elle répond, même par une erreur
+        Err(_) => false,
+    }
+}
+
+/// (interface web activée, port) d'après `confignew.json` ; (true, 7852) si illisible.
+fn reglages_web(alltalk_dir: &Path) -> (bool, u16) {
+    let json: Option<serde_json::Value> = std::fs::read_to_string(alltalk_dir.join("confignew.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let active = json.as_ref().and_then(|j| j.get("gradio_interface")).and_then(|v| v.as_bool()).unwrap_or(true);
+    let port = json
+        .as_ref()
+        .and_then(|j| j.get("gradio_port_number"))
+        .and_then(|v| v.as_u64())
+        .and_then(|p| u16::try_from(p).ok())
+        .unwrap_or(7852);
+    (active, port)
+}
+
 /// Liste des voix utilisables, telles qu'attendues par le champ `character_voice_gen` :
 /// fichiers "xxx.wav" et jeux "voiceset:nom". Source : GET /api/voices (`{"voices":[...]}`) ;
 /// si le serveur ne répond pas, repli sur un parcours de `voices_dir` et de

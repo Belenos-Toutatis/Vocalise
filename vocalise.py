@@ -264,19 +264,50 @@ class VerrouDemarrage:
         self.f.close()  # libère le verrou
         return False
 
+def reglages_web():
+    """(interface web activée ?, son port) d'après confignew.json d'AllTalk ; (True, 7852) par défaut."""
+    try:
+        with open(os.path.join(ALLTALK, "confignew.json"), encoding="utf-8") as f:
+            c = json.load(f)
+        return c.get("gradio_interface", True) is not False, int(c.get("gradio_port_number", 7852))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return True, 7852
+
+def attendre_interface_web(timeout=180):
+    """Une fois l'API prête, AllTalk construit encore son interface web, qui interroge l'API avec un
+    délai de 10 s : si une génération (plus de 10 s sur processeur) occupe l'API à ce moment-là,
+    script.py plante (« KeyError: 'srv_current_voices' ») et emporte le serveur. On attend donc
+    que l'interface web réponde avant de générer."""
+    active, port = reglages_web()
+    if not active:
+        return
+    debut, annonce = time.time(), False
+    while time.time() - debut < timeout:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3).close()
+            return
+        except urllib.error.HTTPError:
+            return  # elle répond, même par une erreur
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        if not annonce:
+            info("Attente de l'interface web d'AllTalk…")
+            annonce = True
+        time.sleep(2)
+    info(f"L'interface web d'AllTalk (port {port}) ne répond pas après {timeout} s : génération quand même.")
+
 def preparer_serveur():
     """Rend AllTalk prêt ; renvoie l'objet d'utilisation à fermer après usage."""
     u = Utilisation()
-    if est_pret():
-        return u
-    with VerrouDemarrage():
-        if est_pret():
-            return u
-        if alltalk_en_cours():
-            info("AllTalk est en cours de démarrage : attente…")
-            attendre_pret()
-        else:
-            attendre_pret(demarrer())
+    if not est_pret():
+        with VerrouDemarrage():
+            if not est_pret():
+                if alltalk_en_cours():
+                    info("AllTalk est en cours de démarrage : attente…")
+                    attendre_pret()
+                else:
+                    attendre_pret(demarrer())
+    attendre_interface_web()
     return u
 
 def liberer_serveur(u, garder):
