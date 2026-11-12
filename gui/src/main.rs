@@ -24,6 +24,8 @@ mod systeme;
 mod texte;
 mod ui;
 mod voicesets;
+#[cfg(windows)]
+mod wasapi;
 
 fn main() -> eframe::Result {
     let mut opts = app::Options::default();

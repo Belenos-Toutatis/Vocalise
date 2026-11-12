@@ -33,7 +33,7 @@ jobs:
 
       - name: Tests
         working-directory: gui
-        run: cargo test --locked -- --test-threads=1
+        run: cargo test --locked
 
       - name: Compilation
         working-directory: gui

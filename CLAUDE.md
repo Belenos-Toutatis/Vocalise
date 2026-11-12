@@ -22,8 +22,9 @@ Deux outils cohabitent :
 
 Tout ce qui dépend du système est dans `gui/src/systeme.rs` (dossiers, lanceur `start_alltalk.sh`
 ou `.bat`, ouverture, commandes d'installation, critère du paquet de mise à jour) ou derrière
-`#[cfg(windows)]` : `recorder`/`player` (module `wasapi`, cpal, dépendance Windows seulement ;
-le flux cpal vit dans un thread dédié car il n'est pas `Send`), `alltalk::Serveur` (`cmd /C
+`#[cfg(windows)]` : `recorder`/`player` s'appuient sur `wasapi.rs` (cpal, dépendance Windows
+seulement), où **tout** l'audio passe par un unique thread permanent : les objets COM de WASAPI
+utilisés depuis des threads éphémères provoquaient une violation d'accès (vu sur GitHub Actions), `alltalk::Serveur` (`cmd /C
 start_alltalk.bat` sans console, arrêt par `taskkill /T /F`), `app::lancer` (rendu logiciel Mesa et
 mode X11 réservés à Linux). Sous Linux, l'audio reste PipeWire : ne pas basculer sur cpal.
 
