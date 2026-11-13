@@ -9,6 +9,8 @@ tests/
 *.flac
 *.mp3
 *.ogg
+# Journal d'AllTalk écrit par l'application dans ce dossier
+alltalk.log
 
 # Réglages locaux de Claude Code
 .claude/settings.local.json
