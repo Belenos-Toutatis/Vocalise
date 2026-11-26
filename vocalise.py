@@ -62,9 +62,20 @@ JOURNAL = os.path.join(ETAT, "alltalk.log")
 def info(msg):
     print(msg, file=sys.stderr, flush=True)
 
+# Proxy : sous Windows, urllib (comme requests dans AllTalk) prend le proxy des réglages Internet
+# et ne l'écarte pas pour 127.0.0.1 (« <local> » ne couvre que les noms sans point). Les appels à
+# AllTalk passent donc par un ouvreur sans proxy, et AllTalk est lancé avec 127.0.0.1 dans NO_PROXY.
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+HOTES_LOCAUX = ("localhost", "127.0.0.1", "::1")
+
+def no_proxy_local(existant):
+    """NO_PROXY existant complété par localhost, 127.0.0.1 et ::1."""
+    liste = [h.strip() for h in (existant or "").split(",") if h.strip()]
+    return ",".join(liste + [h for h in HOTES_LOCAUX if h not in liste])
+
 def est_pret():
     try:
-        return urllib.request.urlopen(API + "/api/ready", timeout=3).read().decode() == "Ready"
+        return LOCAL.open(API + "/api/ready", timeout=3).read().decode() == "Ready"
     except (urllib.error.URLError, ConnectionError, OSError):
         return False
 
@@ -146,6 +157,12 @@ def demarrer():
         # (Pas de PYTORCH_CUDA_ALLOC_CONF=expandable_segments : essayé, il fait échouer presque
         # toutes les générations sur la GTX 1650.)
         env = dict(os.environ, PYTHONUNBUFFERED="1")
+        # Sans cela, l'interface web d'AllTalk joint son API par le proxy du réseau, échoue et
+        # fait planter script.py (« KeyError: 'srv_current_voices' ») dès le démarrage.
+        existant = env.get("NO_PROXY") or env.get("no_proxy")
+        env["NO_PROXY"] = no_proxy_local(existant)
+        if not WINDOWS:
+            env["no_proxy"] = env["NO_PROXY"]
         if WINDOWS:
             # Chemin complet : avec NoDefaultCurrentDirectoryInExePath (défini par Claude Code),
             # cmd ne cherche plus un .bat nommé seul dans le dossier courant.
@@ -284,7 +301,7 @@ def attendre_interface_web(timeout=180):
     debut, annonce = time.time(), False
     while time.time() - debut < timeout:
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3).close()
+            LOCAL.open(f"http://127.0.0.1:{port}/", timeout=3).close()
             return
         except urllib.error.HTTPError:
             return  # elle répond, même par une erreur
@@ -394,7 +411,7 @@ def generer_une_fois(champs):
     req = urllib.request.Request(API + "/api/tts-generate",
                                  data=urllib.parse.urlencode(champs).encode())
     try:
-        return json.loads(urllib.request.urlopen(req, timeout=1800).read())
+        return json.loads(LOCAL.open(req, timeout=1800).read())
     except urllib.error.HTTPError as e:
         try:
             return json.loads(e.read())
@@ -434,7 +451,8 @@ def generer(texte, voix, langue, vitesse, temperature, nom, essais=2):
         if not url.startswith("http"):
             url = API + url
         chemin = tempfile.mktemp(suffix=".wav")
-        urllib.request.urlretrieve(url, chemin)
+        with LOCAL.open(url, timeout=60) as r, open(chemin, "wb") as f:
+            shutil.copyfileobj(r, f)
     with open(chemin, "rb") as f:
         entete = f.read(12)
     if entete[:4] != b"RIFF" or entete[8:12] != b"WAVE":

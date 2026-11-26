@@ -113,6 +113,12 @@ module `maj` ; tout le reste parle à AllTalk en HTTP local.
   générer, `vocalise.py` attend donc que le port web (7852) réponde, et l'application ne se dit
   prête qu'à cette condition (`alltalk::pret_a_generer`), sauf si `gradio_interface` est faux
   dans `confignew.json`.
+- Même plantage (`Failed to retrieve data from: voices…` puis `KeyError`) dès le démarrage derrière
+  un proxy : sous Windows, `requests` (AllTalk) et `urllib` (`vocalise.py`) prennent le proxy des
+  réglages Internet et ne l'écartent pas pour 127.0.0.1 (`<local>` ne couvre que les noms sans
+  point). AllTalk est donc toujours lancé avec localhost, 127.0.0.1 et ::1 ajoutés à `NO_PROXY`,
+  et `vocalise.py` parle à AllTalk par un ouvreur sans proxy (`LOCAL`). `ureq` (application)
+  n'utilise aucun proxy par défaut.
 - `/api/enginereload` plante (bug AllTalk) : pour changer de moteur, éditer
   `~/alltalk_tts/system/tts_engines/tts_engines.json` (`engine_loaded`, `selected_model`) et redémarrer.
 - VRAM : XTTS occupe ~2 Go et le bureau ~1,5 Go ; la génération échoue souvent (« CUDA out of
