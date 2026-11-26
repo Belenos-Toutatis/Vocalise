@@ -286,6 +286,28 @@ fn commande_lanceur(alltalk_dir: &Path) -> std::process::Command {
     cmd
 }
 
+/// `existant` (liste NO_PROXY séparée par des virgules) complété par localhost, 127.0.0.1 et ::1.
+fn no_proxy_local(existant: &str) -> String {
+    let mut liste: Vec<&str> = existant.split(',').map(str::trim).filter(|h| !h.is_empty()).collect();
+    for h in ["localhost", "127.0.0.1", "::1"] {
+        if !liste.contains(&h) {
+            liste.push(h);
+        }
+    }
+    liste.join(",")
+}
+
+/// Variables NO_PROXY à donner à AllTalk (Windows : une seule, les noms y ignorent la casse).
+fn variables_no_proxy() -> Vec<(&'static str, String)> {
+    let existant = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")).unwrap_or_default();
+    let valeur = no_proxy_local(&existant);
+    if cfg!(windows) {
+        vec![("NO_PROXY", valeur)]
+    } else {
+        vec![("NO_PROXY", valeur.clone()), ("no_proxy", valeur)]
+    }
+}
+
 /// Termine un processus et tous ses descendants (`taskkill /PID <pid> /T /F`).
 #[cfg(windows)]
 fn tuer_arbre(pid: u32) {
@@ -358,6 +380,10 @@ impl Serveur {
             // PYTORCH_CUDA_ALLOC_CONF=expandable_segments : essayé, il fait échouer presque
             // toutes les générations sur la GTX 1650.)
             .env("PYTHONUNBUFFERED", "1")
+            // Sans 127.0.0.1 dans NO_PROXY, l'interface web d'AllTalk joint son API par le proxy du
+            // réseau (sous Windows, celui des réglages Internet, dont « <local> » n'écarte pas
+            // 127.0.0.1), échoue et fait planter script.py (« KeyError: 'srv_current_voices' »).
+            .envs(variables_no_proxy())
             .spawn()
             .map_err(|e| format!("Impossible de lancer AllTalk : {e}"))?;
         Ok(Serveur { child })
@@ -499,6 +525,13 @@ mod tests {
         assert!(!s.en_vie());
         assert!(t.elapsed() < Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn no_proxy_complete_sans_doublon() {
+        assert_eq!(no_proxy_local(""), "localhost,127.0.0.1,::1");
+        assert_eq!(no_proxy_local(" intranet.lan , 127.0.0.1"), "intranet.lan,127.0.0.1,localhost,::1");
+        assert_eq!(no_proxy_local("localhost,127.0.0.1,::1,.local"), "localhost,127.0.0.1,::1,.local");
     }
 
     /// Windows : faux « start_alltalk.bat » qui lance un processus enfant long (ping) ; l'arrêt
