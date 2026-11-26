@@ -19,6 +19,7 @@ mod diagnostic;
 mod maj;
 mod paths;
 mod player;
+mod qwen;
 mod recorder;
 mod systeme;
 mod texte;

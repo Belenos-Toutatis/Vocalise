@@ -46,6 +46,36 @@ pub struct Verification {
 /// 6. Jeu de voix : `cfg.voicesets_dir()/cfg.jeu_actif` contient au moins un wav. Gravité Fonction,
 ///    pas de lien ni de commande (détail : « Enregistrez un premier échantillon dans Ma voix »).
 pub fn verifier(cfg: &Config) -> Vec<Verification> {
+    let mut res = verifier_alltalk_et_systeme(cfg);
+    // 7. Qwen3-TTS, seulement s'il est le moteur choisi : environnement Python installé.
+    if cfg.moteur == crate::paths::Moteur::Qwen {
+        res.push(verifier_qwen());
+    }
+    res
+}
+
+fn verifier_qwen() -> Verification {
+    let py = crate::qwen::python();
+    let ok = py.is_file();
+    Verification {
+        composant: "Qwen3-TTS".into(),
+        ok,
+        gravite: Gravite::Fonction,
+        detail: if ok {
+            format!("Environnement trouvé : {}", py.display())
+        } else {
+            format!(
+                "Moteur choisi, mais son environnement Python est absent ({}). Installez d'abord uv, puis lancez la commande ; \
+                 le modèle (environ 2 Go) se télécharge à la première génération.",
+                py.display()
+            )
+        },
+        lien: Some("https://docs.astral.sh/uv/getting-started/installation/"),
+        commande: Some(crate::qwen::commande_installation()),
+    }
+}
+
+fn verifier_alltalk_et_systeme(cfg: &Config) -> Vec<Verification> {
     let mut res = Vec::new();
     let dir = &cfg.alltalk_dir;
 

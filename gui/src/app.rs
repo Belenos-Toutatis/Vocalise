@@ -6,7 +6,7 @@
 use crate::audio::{self, Format};
 use crate::paths::{self, Config};
 use crate::player::Lecteur;
-use crate::{alltalk, diagnostic, maj, recorder, texte, ui, voicesets};
+use crate::{alltalk, diagnostic, maj, qwen, recorder, texte, ui, voicesets};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -727,7 +727,23 @@ impl App {
     }
 
     pub fn peut_generer(&self) -> bool {
-        self.generation.is_none() && self.serveur_pret() && !self.texte.trim().is_empty() && !self.cfg.voix.is_empty()
+        self.generation.is_none() && self.moteur_pret() && !self.texte.trim().is_empty() && !self.cfg.voix.is_empty()
+    }
+
+    /// Changement de moteur dans la carte Voix : enregistrement et nouveau diagnostic (la
+    /// vérification de Qwen3-TTS n'y figure que s'il est choisi).
+    pub fn moteur_change(&mut self) {
+        self.sauver();
+        self.lancer_diagnostic();
+        self.info(format!("Moteur : {} ({}).", self.cfg.moteur.nom(), self.cfg.moteur.description().to_lowercase()));
+    }
+
+    /// Le moteur choisi peut-il générer ? XTTS : AllTalk prêt. Qwen3-TTS : environnement installé.
+    pub fn moteur_pret(&self) -> bool {
+        match self.cfg.moteur {
+            paths::Moteur::Xtts => self.serveur_pret(),
+            paths::Moteur::Qwen => qwen::installe(),
+        }
     }
 
     pub fn generer(&mut self) {
@@ -748,6 +764,8 @@ impl App {
         self.generation = Some(Generation { phase: Phase::Preparation, debut: Instant::now(), sortie: sortie.clone() });
         self.resultat = None;
         self.info(format!("Génération de {}…", sortie.file_name().unwrap_or_default().to_string_lossy()));
+        let moteur = self.cfg.moteur;
+        let (voices_dir, voicesets_dir) = (self.cfg.voices_dir(), self.cfg.voicesets_dir());
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
         thread::spawn(move || {
@@ -758,7 +776,10 @@ impl App {
                     let _ = tx_p.send(Msg::Progression(p));
                     ctx_p.request_repaint();
                 };
-                let produit = alltalk::generer(&req, &wav, &rappel)?;
+                let produit = match moteur {
+                    paths::Moteur::Xtts => alltalk::generer(&req, &wav, &rappel)?,
+                    paths::Moteur::Qwen => qwen::generer(&req, &voices_dir, &voicesets_dir, &wav, &rappel)?,
+                };
                 let duree = audio::duree(&produit).unwrap_or(0.0);
                 let chemin = if format == Format::Wav {
                     produit

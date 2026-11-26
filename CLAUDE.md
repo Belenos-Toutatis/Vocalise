@@ -18,6 +18,17 @@ Deux outils cohabitent :
   Portable Linux/Windows (bibliothèque standard seule ; assemblage des wav en Python pur, sans sox).
 - `gui/` : application de bureau Rust (eframe/egui 0.31), binaire `vocalise-gui`.
 
+Deux moteurs au choix (`moteur` dans la config, `--moteur` en ligne de commande) : **XTTS** par
+AllTalk (défaut) et **Qwen3-TTS 0.6B**, retenu après une écoute à l'aveugle (Chatterbox, Qwen 1.7B,
+F5-TTS français écartés ; ni Chatterbox ni Qwen ne tiennent sur la GTX 1650 avec le bureau, en
+float16 Qwen plante). Qwen tourne sans AllTalk, sur le processeur (~4 fois la durée de l'audio),
+dans son propre environnement Python `<données>/vocalise/qwen/env` (uv, `qwen-tts`, torch CPU ;
+incompatible avec l'environnement d'AllTalk, ne jamais l'y installer). `moteur_qwen.py` (à la
+racine, embarqué dans l'application par `include_str!`) est lancé pour une génération : ligne JSON
+« prêt », puis une demande JSON par ligne sur stdin, une réponse par ligne sur stdout (journaux sur
+stderr → `qwen.log`), fin à la fermeture de stdin. Référence de voix : `qwen/voix/<nom>.wav` + `.txt`
+(texte exact de l'extrait), sinon premier échantillon du jeu en mode timbre seul (moins fidèle).
+
 ## Windows
 
 Tout ce qui dépend du système est dans `gui/src/systeme.rs` (dossiers, lanceur `start_alltalk.sh`
@@ -63,7 +74,7 @@ vocalise-gui --capture <dossier> [--theme clair|sombre] [--taille 860x560]
 ```
 
 Le mode `--capture` écrit un PNG par écran (synthese, ma-voix, reglages, confirmation,
-enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour) puis quitte. **C'est le seul moyen de voir l'interface depuis
+enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour, synthese-qwen) puis quitte. **C'est le seul moyen de voir l'interface depuis
 une session Claude** (pas de capture d'écran du bureau) : l'utiliser après tout changement visuel.
 Il ne démarre rien, n'enregistre rien et ne sauvegarde pas la config. La fenêtre de capture s'ouvre
 via X11 (XWayland), au-dessus des autres : sous Wayland, une fenêtre recouverte n'est plus redessinée
@@ -85,7 +96,7 @@ Deux couches strictement séparées, conçues pour être modifiées indépendamm
   qui lit la fin d'un wav en cours d'écriture, conversion ffmpeg), `texte` (découpage par phrases sous
   250 caractères (au-delà, la VRAM de la GTX 1650 ne suffit plus de façon fiable), textes modèles embarqués par `include_str!` depuis `gui/textes/`), `alltalk` (API et
   processus serveur), `voicesets` (jeux de voix), `recorder` (`pw-record` + `pactl -f json`),
-  `player` (`pw-play`), `diagnostic` (composants manquants → lien officiel + commande ; bascule du
+  `player` (`pw-play`), `qwen` (moteur Qwen3-TTS : processus `moteur_qwen.py`, référence de voix), `diagnostic` (composants manquants → lien officiel + commande ; bascule du
   moteur vers XTTS par édition de `tts_engines.json`), `maj` (dernière release GitHub via
   `api.github.com`, comparaison avec `CARGO_PKG_VERSION` ; jamais d'installation automatique).
   Tout l'audio système passe par des sous-processus PipeWire, pas par cpal.

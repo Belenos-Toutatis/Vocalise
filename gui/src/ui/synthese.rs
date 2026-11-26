@@ -5,6 +5,7 @@ use super::theme::{self, pal};
 use super::widgets::{self, Bouton, Ton};
 use crate::app::{App, EtatServeur, Phase};
 use crate::audio::Format;
+use crate::paths::Moteur;
 use eframe::egui::{self, vec2, Align, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, Ui};
 
 const LARGEUR_DROITE: f32 = 310.0;
@@ -58,14 +59,18 @@ enum Bandeau {
     Aucun,
     Generation,
     Serveur,
+    /// Qwen3-TTS choisi mais pas installé.
+    Qwen,
     Resultat,
 }
 
 fn bandeau(app: &App) -> Bandeau {
     if app.generation.is_some() {
         Bandeau::Generation
-    } else if !app.serveur_pret() {
+    } else if app.cfg.moteur == Moteur::Xtts && !app.serveur_pret() {
         Bandeau::Serveur
+    } else if !app.moteur_pret() {
+        Bandeau::Qwen
     } else if app.resultat.is_some() {
         Bandeau::Resultat
     } else {
@@ -112,6 +117,7 @@ fn carte_texte(app: &mut App, ui: &mut Ui, hauteur: Option<f32>) {
             Bandeau::Aucun => {}
             Bandeau::Generation => bandeau_generation(app, ui),
             Bandeau::Serveur => bandeau_serveur(app, ui),
+            Bandeau::Qwen => bandeau_qwen(app, ui),
             Bandeau::Resultat => bandeau_resultat(app, ui),
         }
     });
@@ -206,7 +212,9 @@ fn ligne_generer(app: &mut App, ui: &mut Ui) {
             });
         });
         ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-            let raison = if !app.serveur_pret() {
+            let raison = if app.cfg.moteur == Moteur::Qwen && !app.moteur_pret() {
+                "Qwen3-TTS doit être installé pour générer."
+            } else if !app.moteur_pret() {
                 "AllTalk doit être démarré pour générer."
             } else if app.texte.trim().is_empty() {
                 "Saisissez ou ouvrez d'abord un texte."
@@ -250,6 +258,7 @@ fn bandeau_generation(app: &mut App, ui: &mut Ui) {
     let p = pal(ui);
     let Some(g) = &app.generation else { return };
     let (texte, fraction) = match &g.phase {
+        Phase::Preparation if app.cfg.moteur == Moteur::Qwen => ("Chargement de Qwen3-TTS…".to_string(), None),
         Phase::Preparation => ("Envoi du texte à AllTalk…".to_string(), None),
         Phase::Morceau(pr) => (
             format!("Morceau {} / {}", pr.morceau, pr.total),
@@ -268,6 +277,23 @@ fn bandeau_generation(app: &mut App, ui: &mut Ui) {
             ui.add(egui::Label::new(RichText::new(format!("{ecoule} · {fichier}")).size(13.0).color(p.texte_2)).truncate());
         });
         widgets::progression(ui, fraction);
+    });
+}
+
+fn bandeau_qwen(app: &mut App, ui: &mut Ui) {
+    let p = pal(ui);
+    cadre_bandeau(ui, Ton::Avert, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(42.0);
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(RichText::new("⚠").size(15.0).color(p.avert));
+            ui.add(egui::Label::new(RichText::new("Qwen3-TTS n'est pas installé.").size(14.0).color(p.avert)).truncate());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Bouton::secondaire("Voir le diagnostic").petit().ui(ui).clicked() {
+                    app.ecran = crate::app::Ecran::Reglages;
+                }
+            });
+        });
     });
 }
 
@@ -343,6 +369,27 @@ fn carte_voix(app: &mut App, ui: &mut Ui) {
         widgets::titre_carte(ui, "Voix");
         ui.add_space(2.0);
         let largeur = ui.available_width();
+        let avant = app.cfg.moteur;
+        ui.add_enabled_ui(!occupe, |ui| {
+            egui::ComboBox::from_id_salt("choix_moteur")
+                .width(largeur)
+                .selected_text(RichText::new(format!("Moteur : {}", app.cfg.moteur.nom())).size(15.0))
+                .show_ui(ui, |ui| {
+                    for m in Moteur::TOUS {
+                        ui.selectable_value(&mut app.cfg.moteur, m, format!("{}  —  {}", m.nom(), m.description()));
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "XTTS : par AllTalk, sur la carte graphique, quelques secondes par phrase.\n\
+                     Qwen3-TTS : sans AllTalk, sur le processeur, plus fidèle à votre voix\n\
+                     mais environ quatre fois plus lent que la durée de l'audio.",
+                );
+        });
+        if app.cfg.moteur != avant {
+            app.moteur_change();
+        }
+        ui.add_space(2.0);
         ui.add_enabled_ui(!occupe, |ui| {
             egui::ComboBox::from_id_salt("choix_voix")
                 .width(largeur)
@@ -377,9 +424,10 @@ fn carte_voix(app: &mut App, ui: &mut Ui) {
             widgets::encadre(ui, Ton::Avert, "Cette voix n'est plus disponible : choisissez-en une autre.");
         }
 
+        let reglable = !occupe && app.cfg.moteur == Moteur::Xtts;
         ui.add_space(8.0);
         ligne_reglage(ui, "Vitesse", &format!("{}×", widgets::decimal(app.cfg.vitesse, 2)));
-        ui.add_enabled_ui(!occupe, |ui| {
+        ui.add_enabled_ui(reglable, |ui| {
             widgets::curseur(ui, &mut app.cfg.vitesse, 0.7, 1.3, 0.05, largeur)
                 .on_hover_text("Glissez, ou utilisez les flèches du clavier.");
         });
@@ -387,11 +435,14 @@ fn carte_voix(app: &mut App, ui: &mut Ui) {
 
         ui.add_space(8.0);
         ligne_reglage(ui, "Température", &widgets::decimal(app.cfg.temperature, 2));
-        ui.add_enabled_ui(!occupe, |ui| {
+        ui.add_enabled_ui(reglable, |ui| {
             widgets::curseur(ui, &mut app.cfg.temperature, 0.3, 1.0, 0.05, largeur)
                 .on_hover_text("Glissez, ou utilisez les flèches du clavier.");
         });
         widgets::secondaire(ui, "Basse : diction régulière. Haute : plus vivante, moins prévisible.");
+        if app.cfg.moteur == Moteur::Qwen {
+            widgets::secondaire(ui, "Avec Qwen3-TTS, vitesse et température n'ont pas d'effet : il règle seul son débit.");
+        }
     });
 }
 

@@ -40,6 +40,7 @@ Name: "chemin"; Description: "Ajouter la commande « vocalise » au PATH (pour l
 [Files]
 Source: "..\gui\target\release\vocalise-gui.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vocalise.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\moteur_qwen.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vocalise.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 

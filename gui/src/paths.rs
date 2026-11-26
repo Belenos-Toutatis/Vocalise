@@ -4,6 +4,34 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Moteur de synthèse vocale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Moteur {
+    /// XTTS v2 par le serveur AllTalk : carte graphique, rapide.
+    Xtts,
+    /// Qwen3-TTS 0.6B dans son propre environnement Python, sur le processeur : plus fidèle, plus lent.
+    Qwen,
+}
+
+impl Moteur {
+    pub const TOUS: [Moteur; 2] = [Moteur::Xtts, Moteur::Qwen];
+
+    pub fn nom(self) -> &'static str {
+        match self {
+            Moteur::Xtts => "XTTS (AllTalk)",
+            Moteur::Qwen => "Qwen3-TTS",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Moteur::Xtts => "Carte graphique, rapide",
+            Moteur::Qwen => "Processeur, plus fidèle, plus lent",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -26,6 +54,8 @@ pub struct Config {
     pub temperature: f32,
     /// Format d'export des fichiers générés (wav par défaut).
     pub format: crate::audio::Format,
+    /// Moteur de synthèse : XTTS (AllTalk) ou Qwen3-TTS.
+    pub moteur: Moteur,
     /// Vérifier au démarrage (au plus une fois par jour) s'il existe une version plus récente.
     pub verifier_maj: bool,
     /// Date (AAAA-MM-JJ) de la dernière vérification de mise à jour réussie.
@@ -51,6 +81,7 @@ impl Default for Config {
             vitesse: 1.0,
             temperature: 0.7,
             format: crate::audio::Format::Wav,
+            moteur: Moteur::Xtts,
             verifier_maj: true,
             maj_verifiee_le: None,
             avertissement_chargement: None,

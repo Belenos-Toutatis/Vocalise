@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Captures produites, dans l'ordre.
-const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour"];
+const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour", "synthese-qwen"];
 
 pub struct Capture {
     dossier: PathBuf,
@@ -162,6 +162,13 @@ fn preparer(app: &mut App, etape: usize) {
             app.resultat = None;
             app.historique.clear();
             app.statut = None;
+        }
+        "synthese-qwen" => {
+            // Moteur Qwen3-TTS (rien n'est enregistré : la capture ne sauvegarde pas la config).
+            app.diagnostic_simule = false;
+            app.diagnostic = None;
+            app.ecran = Ecran::Synthese;
+            app.cfg.moteur = crate::paths::Moteur::Qwen;
         }
         "mises-a-jour" => {
             // Réglages, défilé jusqu'à la carte « Mises à jour » (version simulée posée à l'étape reglages).

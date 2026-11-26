@@ -44,7 +44,7 @@ jobs:
 
       - name: Commande vocalise (syntaxe et aide)
         run: |
-          python -m py_compile vocalise.py
+          python -m py_compile vocalise.py moteur_qwen.py
           python vocalise.py --help | Select-Object -First 3
           python vocalise.py --arreter
 

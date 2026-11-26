@@ -28,6 +28,21 @@ pub fn dossier_config() -> PathBuf {
         .unwrap_or_else(|| dossier_personnel().join(".config"))
 }
 
+/// Dossier des données de l'application : `$XDG_DATA_HOME` ou `~/.local/share` (Linux),
+/// `%LOCALAPPDATA%` (Windows).
+pub fn dossier_donnees() -> PathBuf {
+    if WINDOWS {
+        if let Some(d) = std::env::var_os("LOCALAPPDATA").filter(|d| !d.is_empty()) {
+            return PathBuf::from(d);
+        }
+        return dossier_personnel().join("AppData").join("Local");
+    }
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dossier_personnel().join(".local").join("share"))
+}
+
 /// Nom du lanceur fourni par AllTalk à la racine de son dossier.
 pub const LANCEUR_ALLTALK: &str = if WINDOWS { "start_alltalk.bat" } else { "start_alltalk.sh" };
 

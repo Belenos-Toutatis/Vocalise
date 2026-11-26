@@ -7,6 +7,7 @@ Usage :
   vocalise --voix autre.wav --vitesse 1.1 ...
   vocalise --garder -f partie1.txt -o p1.wav   # plusieurs fichiers d'affilée…
   vocalise --arreter                           # …puis libérer la mémoire
+  vocalise --moteur qwen -f texte.txt -o s.wav # Qwen3-TTS sur le processeur, sans AllTalk
 
 Les textes longs sont découpés par phrases (limite API 2000 caractères), générés morceau par
 morceau puis assemblés en un seul wav.
@@ -486,14 +487,103 @@ def generer_adaptatif(texte, generer_morceau):
         info(f"    échec d'AllTalk (VRAM presque pleine) : morceau recoupé en {len(a)} + {len(b)} caractères")
         return generer_adaptatif(a, generer_morceau) + generer_adaptatif(b, generer_morceau)
 
+# ------------------------------------------------------------------ moteur Qwen3-TTS (sans AllTalk)
+#
+# Qwen3-TTS 0.6B tourne dans son propre environnement Python (qwen-tts et torch, incompatibles avec
+# ceux d'AllTalk), sur le processeur : il ne tient pas avec le bureau sur une carte de 4 Go.
+# moteur_qwen.py, lancé pour la durée d'une commande, charge le modèle (quelques secondes), lit les
+# morceaux sur son entrée et se termine à la fin : rien ne reste en mémoire.
+
+def dossier_donnees():
+    if WINDOWS:
+        return os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+    return os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+
+QWEN = os.path.join(dossier_donnees(), "vocalise", "qwen")
+
+def python_qwen():
+    if os.environ.get("VOCALISE_QWEN_PYTHON"):
+        return os.environ["VOCALISE_QWEN_PYTHON"]
+    if WINDOWS:
+        return os.path.join(QWEN, "env", "Scripts", "python.exe")
+    return os.path.join(QWEN, "env", "bin", "python")
+
+def reference_qwen(voix):
+    """(wav de référence, texte prononcé dedans ou "") pour la voix demandée. Référence préparée
+    dans <données>/vocalise/qwen/voix/<nom>.wav (+ .txt) si elle existe ; sinon le premier
+    échantillon du jeu de voix, ou le wav du dossier voices, sans texte (timbre seul)."""
+    nom = voix.split(":", 1)[1] if voix.startswith("voiceset:") else os.path.splitext(voix)[0]
+    prepare = os.path.join(QWEN, "voix", nom + ".wav")
+    if os.path.isfile(prepare):
+        txt = os.path.splitext(prepare)[0] + ".txt"
+        texte = open(txt, encoding="utf-8").read().strip() if os.path.isfile(txt) else ""
+        return prepare, texte
+    if voix.startswith("voiceset:"):
+        jeu = os.path.join(ALLTALK, "voices", "xtts_multi_voice_sets", nom)
+        wavs = sorted(f for f in os.listdir(jeu) if f.lower().endswith(".wav")) if os.path.isdir(jeu) else []
+        if wavs:
+            return os.path.join(jeu, wavs[0]), ""
+    simple = os.path.join(ALLTALK, "voices", voix)
+    if os.path.isfile(simple):
+        return simple, ""
+    sys.exit(f"Voix introuvable pour Qwen3-TTS : {voix}")
+
+def generer_qwen(morceaux, voix, langue, dossier):
+    """Génère chaque morceau avec moteur_qwen.py ; renvoie la liste des wav (dans `dossier`)."""
+    py = python_qwen()
+    if not os.path.isfile(py):
+        sys.exit(f"Qwen3-TTS n'est pas installé ({py} introuvable). Installation (uv) :\n"
+                 f"  uv venv --python 3.12 {os.path.join(QWEN, 'env')}\n"
+                 f"  uv pip install --python {os.path.join(QWEN, 'env')} qwen-tts --torch-backend cpu")
+    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), "moteur_qwen.py")
+    ref, ref_texte = reference_qwen(voix)
+    if not ref_texte:
+        info(f"Référence sans transcription ({ref}) : seul le timbre est copié.")
+    info("Chargement de Qwen3-TTS (sur le processeur, lent : plusieurs secondes par seconde d'audio)…")
+    os.makedirs(os.path.join(ETAT), exist_ok=True)
+    with open(os.path.join(ETAT, "qwen.log"), "ab") as log:
+        p = subprocess.Popen([py, script, "--ref-audio", ref, "--ref-texte", ref_texte, "--langue", langue],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                             text=True, encoding="utf-8",
+                             creationflags=CREATE_NO_WINDOW if WINDOWS else 0)
+    try:
+        def lire():
+            ligne = p.stdout.readline()
+            if not ligne:
+                sys.exit(f"Qwen3-TTS s'est arrêté sans répondre : voir {os.path.join(ETAT, 'qwen.log')}")
+            return json.loads(ligne)
+        etat = lire()
+        if not etat.get("pret"):
+            sys.exit("Qwen3-TTS n'a pas pu se charger : " + etat.get("erreur", "raison inconnue"))
+        fichiers = []
+        for i, m in enumerate(morceaux):
+            info(f"[{i+1}/{len(morceaux)}] {len(m)} caractères...")
+            sortie = os.path.join(dossier, f"qwen_{i:03d}.wav")
+            p.stdin.write(json.dumps({"texte": m, "sortie": sortie}, ensure_ascii=False) + "\n")
+            p.stdin.flush()
+            r = lire()
+            if not r.get("ok"):
+                sys.exit("Échec de Qwen3-TTS : " + r.get("erreur", "raison inconnue"))
+            fichiers.append(sortie)
+        return fichiers
+    finally:
+        try:
+            p.stdin.close()
+            p.wait(timeout=30)
+        except Exception:
+            p.kill()
+
 def main():
-    ap = argparse.ArgumentParser(description="Vocalise : synthèse vocale avec ma voix (AllTalk/XTTS)")
+    ap = argparse.ArgumentParser(description="Vocalise : synthèse vocale avec ma voix (AllTalk/XTTS ou Qwen3-TTS)")
     ap.add_argument("texte", nargs="?", help="texte à dire")
     ap.add_argument("-f", "--fichier", help="fichier texte à lire")
     ap.add_argument("-o", "--sortie", help="wav de sortie")
     ap.add_argument("--voix", default=None,
                     help="fichier du dossier voices d'AllTalk ou 'voiceset:nom' (défaut : voiceset:emmanuel s'il existe, sinon emmanuel.wav)")
     ap.add_argument("--langue", default="fr")
+    ap.add_argument("--moteur", choices=["xtts", "qwen"], default="xtts",
+                    help="xtts (AllTalk, carte graphique, rapide) ou qwen (Qwen3-TTS 0.6B, processeur, "
+                         "plus fidèle mais plusieurs fois plus lent ; ignore --vitesse et --temperature)")
     ap.add_argument("--vitesse", type=float, default=1.0)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--garder", action="store_true",
@@ -521,6 +611,11 @@ def main():
         a.voix = "voiceset:emmanuel" if os.path.isdir(jeu) and any(f.endswith(".wav") for f in os.listdir(jeu)) else "emmanuel.wav"
     # Un SIGTERM (fin de session, délai dépassé) passe par les blocs finally comme un Ctrl-C.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    if a.moteur == "qwen":
+        with tempfile.TemporaryDirectory(prefix="vocalise_qwen_") as tmp:
+            fichiers = generer_qwen(decouper(texte), a.voix, a.langue, tmp)
+            ecrire_sortie(fichiers, a.sortie)
+        return
     try:
         utilisation = preparer_serveur()
     except BaseException:
@@ -541,7 +636,10 @@ def main():
             fichiers += generer_adaptatif(m, generer_morceau)
     finally:
         liberer_serveur(utilisation, a.garder)
-    sortie = os.path.abspath(a.sortie)
+    ecrire_sortie(fichiers, a.sortie)
+
+def ecrire_sortie(fichiers, sortie):
+    sortie = os.path.abspath(sortie)
     os.makedirs(os.path.dirname(sortie), exist_ok=True)
     if len(fichiers) == 1:
         shutil.copy(fichiers[0], sortie)

@@ -86,6 +86,12 @@ fn bandeau_serveur(app: &mut App, ctx: &egui::Context) {
                 encadre_installation(app, ui);
                 return;
             }
+            if app.cfg.moteur == crate::paths::Moteur::Qwen {
+                etat_qwen(ui);
+                avis_non_bloquant(app, ui);
+                avis_mise_a_jour(app, ui);
+                return;
+            }
             let arrete = matches!(etat, EtatServeur::Arrete);
             let (fond, bord) = if arrete { (p.avert_doux, p.avert_doux) } else { (p.surface, p.bord) };
             Frame::new()
@@ -152,6 +158,39 @@ fn bandeau_serveur(app: &mut App, ctx: &egui::Context) {
                 });
             avis_non_bloquant(app, ui);
             avis_mise_a_jour(app, ui);
+        });
+}
+
+/// Bandeau du moteur Qwen3-TTS : pas de serveur, seulement l'état de son installation.
+fn etat_qwen(ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    let installe = crate::qwen::installe();
+    Frame::new()
+        .fill(if installe { p.surface } else { p.avert_doux })
+        .stroke(Stroke::new(1.0, if installe { p.bord } else { p.avert_doux }))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(14, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.set_min_height(30.0);
+                widgets::pastille(ui, if installe { p.succes } else { p.avert }, 5.0);
+                if installe {
+                    ui.label(RichText::new("Qwen3-TTS est prêt").font(theme::police_forte(14.5)).color(p.texte));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new("sur le processeur, sans AllTalk · chargé seulement pendant une génération").size(13.5).color(p.texte_2),
+                        )
+                        .truncate(),
+                    );
+                } else {
+                    ui.label(RichText::new("Qwen3-TTS n'est pas installé").font(theme::police_forte(14.5)).color(p.texte));
+                    ui.add(
+                        egui::Label::new(RichText::new("voir Réglages › Diagnostic, ou choisir XTTS dans la carte Voix").size(13.5).color(p.texte_2))
+                            .truncate(),
+                    );
+                }
+            });
         });
 }
 

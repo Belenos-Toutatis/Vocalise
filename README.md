@@ -129,10 +129,34 @@ Relancez-le après toute mise à jour du code.
 ln -sf "$PWD/vocalise.py" ~/.local/bin/vocalise
 ```
 
-Il n'a besoin que de Python 3 (bibliothèque standard) et de `sox` pour recoller les textes longs
-(`sudo apt install sox`).
+Il n'a besoin que de Python 3 (bibliothèque standard).
 
-### 5. Votre première voix
+### 5. Le moteur Qwen3-TTS (facultatif)
+
+En plus d'XTTS (AllTalk), Vocalise peut lire avec **Qwen3-TTS 0.6B** (Alibaba, licence Apache 2.0).
+À l'écoute à l'aveugle, il ressemble davantage à la voix enregistrée, mais il tourne sur le
+processeur (avec le bureau, il ne tient pas sur une carte de 4 Go) : compter environ **quatre fois
+la durée de l'audio** (une minute de narration ≈ quatre minutes de calcul), contre quelques
+secondes avec XTTS sur la carte graphique. Il n'a pas besoin d'AllTalk.
+
+Il vit dans son propre environnement Python, installé avec [uv](https://docs.astral.sh/uv/getting-started/installation/)
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`, ou `winget install --id astral-sh.uv -e`) :
+
+```bash
+uv venv --python 3.12 ~/.local/share/vocalise/qwen/env
+uv pip install --python ~/.local/share/vocalise/qwen/env qwen-tts --torch-backend cpu
+```
+
+(Windows : remplacer `~/.local/share` par `$env:LOCALAPPDATA`.) Le modèle, environ 2 Go, se
+télécharge à la première génération. Choix du moteur : carte **Voix** de l'écran Synthèse, ou
+`vocalise --moteur qwen`. Vitesse et température n'ont pas d'effet avec Qwen3-TTS.
+
+Qwen3-TTS imite la voix à partir d'un extrait de quelques secondes **et du texte prononcé dedans**.
+Pour un jeu de voix `<nom>`, il prend `~/.local/share/vocalise/qwen/voix/<nom>.wav` et `<nom>.txt`
+(10 s environ, le texte mot pour mot) ; sans eux, le premier échantillon du jeu, sans texte : seul
+le timbre est alors copié et la ressemblance est moindre.
+
+### 6. Votre première voix
 
 1. Lancer AllTalk (ou laisser Vocalise le faire depuis Réglages).
 2. Ouvrir Vocalise → **Ma voix** → *Nouveau jeu…* (par exemple votre prénom, sans accent).
@@ -206,6 +230,7 @@ vocalise -f texte.txt -o narration.wav          # texte long, découpé par phra
 vocalise --voix voiceset:emmanuel --vitesse 1.1 --temperature 0.5 -o s.wav "…"
 vocalise --garder -f partie1.txt -o p1.wav      # garder AllTalk chargé pour enchaîner…
 vocalise --arreter                              # …puis le décharger
+vocalise --moteur qwen -f texte.txt -o s.wav    # Qwen3-TTS : processeur, plus fidèle, plus lent
 ```
 
 Si AllTalk ne tourne pas, `vocalise` le démarre (environ une minute) et l'arrête à la fin pour
@@ -227,6 +252,7 @@ Rien n'est jamais supprimé par Vocalise.
 | `echantillons/` | Enregistrements bruts, datés (utiles plus tard pour un fine-tuning). |
 | `echantillons/corbeille/` | Échantillons retirés d'un jeu ou d'un jeu réinitialisé. |
 | `sorties/` | Fichiers audio générés par l'application. |
+| `~/.local/share/vocalise/qwen/` | Moteur Qwen3-TTS : environnement Python (`env/`), extraits de référence (`voix/`), journal. |
 | `tests/` | Sorties de test. |
 | `gui/` | Code Rust de l'application (`cargo test` pour les tests). `gui/textes/` : textes modèles, ajoutez-y vos `.md`. |
 | `CLAUDE.md` | Repères pour Claude Code (commandes, architecture, règles sur les fichiers). |
