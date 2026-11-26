@@ -98,6 +98,124 @@ pub fn reference(voix: &str, voices_dir: &Path, voicesets_dir: &Path) -> Result<
     Err(format!("Voix introuvable pour Qwen3-TTS : {voix}"))
 }
 
+/// Durée conseillée de l'extrait de référence, et bornes du curseur (secondes).
+pub const EXTRAIT_DEFAUT: f32 = 10.0;
+pub const EXTRAIT_MIN: f32 = 4.0;
+pub const EXTRAIT_MAX: f32 = 20.0;
+
+/// Référence préparée pour une voix : extrait et texte prononcé dedans.
+#[derive(Clone, Debug)]
+pub struct Reference {
+    pub wav: PathBuf,
+    pub texte: String,
+    pub duree: f32,
+}
+
+fn dossier_voix() -> PathBuf {
+    dossier().join("voix")
+}
+
+/// Référence préparée de `nom` (jeu de voix ou voix simple sans `.wav`), s'il y en a une.
+pub fn reference_preparee(nom: &str) -> Option<Reference> {
+    reference_preparee_dans(&dossier_voix(), nom)
+}
+
+fn reference_preparee_dans(d: &Path, nom: &str) -> Option<Reference> {
+    let wav = d.join(format!("{nom}.wav"));
+    if !wav.is_file() {
+        return None;
+    }
+    let texte = std::fs::read_to_string(wav.with_extension("txt")).unwrap_or_default().trim().to_string();
+    let duree = crate::audio::duree(&wav).unwrap_or(0.0);
+    Some(Reference { wav, texte, duree })
+}
+
+/// Début de l'échantillon, coupé dans un silence vers `secondes` (au plus tard), en PCM 16 bits.
+/// Renvoie la durée réelle.
+pub fn ecrire_extrait(echantillon: &Path, secondes: f32, dest: &Path) -> Result<f32, String> {
+    let w = crate::audio::lire(echantillon).map_err(|e| format!("Lecture de {} impossible : {e}", echantillon.display()))?;
+    let e = crate::audio::tronquer(&w, secondes);
+    let part = dest.with_extension("wav.part");
+    crate::audio::ecrire_i16(&part, &e)?;
+    std::fs::rename(&part, dest).map_err(|err| {
+        let _ = std::fs::remove_file(&part);
+        format!("Impossible d'écrire {} : {err}", dest.display())
+    })?;
+    Ok(e.samples.len() as f32 / e.rate.max(1) as f32)
+}
+
+/// Prépare la référence de `nom` : extrait de l'échantillon et texte. Une référence existante
+/// est déplacée dans `voix/corbeille/`, jamais supprimée.
+pub fn preparer_reference(echantillon: &Path, secondes: f32, nom: &str, texte: &str) -> Result<Reference, String> {
+    preparer_reference_dans(&dossier_voix(), echantillon, secondes, nom, texte)
+}
+
+fn preparer_reference_dans(d: &Path, echantillon: &Path, secondes: f32, nom: &str, texte: &str) -> Result<Reference, String> {
+    let texte = texte.split_whitespace().collect::<Vec<_>>().join(" ");
+    if texte.is_empty() {
+        return Err("Écrivez le texte prononcé dans l'extrait.".into());
+    }
+    std::fs::create_dir_all(d).map_err(|e| format!("Impossible de créer {} : {e}", d.display()))?;
+    // Nouvel extrait écrit à part d'abord : en cas d'échec, l'ancienne référence reste en place.
+    let neuf = d.join(format!("{nom}.nouveau.wav"));
+    ecrire_extrait(echantillon, secondes, &neuf)?;
+    let nettoyer = |e: String| {
+        let _ = std::fs::remove_file(&neuf);
+        e
+    };
+    retirer_reference_dans(d, nom).map_err(nettoyer)?;
+    let txt = d.join(format!("{nom}.txt"));
+    let part = d.join(format!("{nom}.txt.part"));
+    std::fs::write(&part, format!("{texte}\n"))
+        .and_then(|_| std::fs::rename(&part, &txt))
+        .map_err(|e| nettoyer(format!("Impossible d'écrire {} : {e}", txt.display())))?;
+    let wav = d.join(format!("{nom}.wav"));
+    std::fs::rename(&neuf, &wav).map_err(|e| nettoyer(format!("Impossible d'écrire {} : {e}", wav.display())))?;
+    reference_preparee_dans(d, nom).ok_or_else(|| format!("{} introuvable après écriture.", wav.display()))
+}
+
+/// Déplace la référence de `nom` (wav et txt) dans `voix/corbeille/`. Sans effet s'il n'y en a pas.
+pub fn retirer_reference(nom: &str) -> Result<(), String> {
+    retirer_reference_dans(&dossier_voix(), nom)
+}
+
+fn retirer_reference_dans(d: &Path, nom: &str) -> Result<(), String> {
+    let corbeille = d.join("corbeille");
+    let h = crate::paths::horodatage();
+    for ext in ["wav", "txt"] {
+        let src = d.join(format!("{nom}.{ext}"));
+        if !src.is_file() {
+            continue;
+        }
+        std::fs::create_dir_all(&corbeille).map_err(|e| format!("Impossible de créer {} : {e}", corbeille.display()))?;
+        let mut dest = corbeille.join(format!("{nom}_{h}.{ext}"));
+        let mut i = 2;
+        while dest.exists() {
+            dest = corbeille.join(format!("{nom}_{h}-{i}.{ext}"));
+            i += 1;
+        }
+        std::fs::rename(&src, &dest).map_err(|e| format!("Impossible de déplacer {} : {e}", src.display()))?;
+    }
+    Ok(())
+}
+
+/// Proposition de texte pour un extrait de `secondes` d'une lecture de `modele` : les premiers
+/// mots (environ 2,6 par seconde), arrêtés si possible à une ponctuation. À vérifier à l'écoute.
+pub fn texte_propose(modele: &str, secondes: f32) -> String {
+    let mots: Vec<&str> = modele
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .flat_map(|l| l.split_whitespace())
+        .collect();
+    let cible = ((secondes * 2.6).round() as usize).clamp(1, mots.len().max(1));
+    let fin_phrase = |m: &str| m.ends_with(['.', '!', '?', ',', ';', ':']);
+    let n = (cible.saturating_sub(6)..=cible.min(mots.len()))
+        .rev()
+        .find(|&i| i > 0 && fin_phrase(mots[i - 1]))
+        .unwrap_or(cible.min(mots.len()));
+    mots[..n].join(" ")
+}
+
 /// Une réponse du script, une ligne JSON.
 fn lire(sortie: &mut impl BufRead, journal: &Path) -> Result<serde_json::Value, String> {
     let mut ligne = String::new();
@@ -221,6 +339,38 @@ mod tests {
         assert_eq!(w, voices.join("simple-test-qwen.wav"));
         assert!(reference("voiceset:absent-test-qwen", &voices, &jeux).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn preparer_puis_remplacer_reference() {
+        let d = std::env::temp_dir().join(format!("vocalise_test_qwen_ref_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let ech = d.join("ech.wav");
+        let w = crate::audio::Wav { rate: 24000, samples: (0..24000 * 15).map(|i| ((i as f32) * 0.05).sin() * 0.3).collect() };
+        crate::audio::ecrire_i16(&ech, &w).unwrap();
+        let voix = d.join("voix");
+        assert!(preparer_reference_dans(&voix, &ech, 10.0, "jeu", "  ").is_err());
+        let r = preparer_reference_dans(&voix, &ech, 10.0, "jeu", "Bonjour à tous,\n et bienvenue.").unwrap();
+        assert!(r.duree > 6.9 && r.duree <= 10.01, "{}", r.duree);
+        assert_eq!(r.texte, "Bonjour à tous, et bienvenue.");
+        // Remplacement : l'ancienne référence part dans la corbeille.
+        let r2 = preparer_reference_dans(&voix, &ech, 5.0, "jeu", "Bonjour.").unwrap();
+        assert!(r2.duree <= 5.01);
+        assert_eq!(std::fs::read_dir(voix.join("corbeille")).unwrap().count(), 2);
+        retirer_reference_dans(&voix, "jeu").unwrap();
+        assert!(reference_preparee_dans(&voix, "jeu").is_none());
+        assert_eq!(std::fs::read_dir(voix.join("corbeille")).unwrap().count(), 4);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn proposition_de_texte() {
+        let m = "# Titre\nBonjour à tous, et bienvenue dans cette nouvelle vidéo. Aujourd'hui, nous allons observer ce qui se passe.";
+        let t = texte_propose(m, 4.0);
+        assert!(t.starts_with("Bonjour à tous,"), "{t}");
+        assert!(!t.contains('#'));
+        assert_eq!(texte_propose(m, 60.0), m.lines().nth(1).unwrap());
     }
 
     /// Génération réelle (environnement Qwen installé) : `cargo test -- --ignored integration_qwen`.

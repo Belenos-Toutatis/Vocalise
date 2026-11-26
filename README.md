@@ -151,10 +151,14 @@ uv pip install --python ~/.local/share/vocalise/qwen/env qwen-tts --torch-backen
 télécharge à la première génération. Choix du moteur : carte **Voix** de l'écran Synthèse, ou
 `vocalise --moteur qwen`. Vitesse et température n'ont pas d'effet avec Qwen3-TTS.
 
-Qwen3-TTS imite la voix à partir d'un extrait de quelques secondes **et du texte prononcé dedans**.
-Pour un jeu de voix `<nom>`, il prend `~/.local/share/vocalise/qwen/voix/<nom>.wav` et `<nom>.txt`
-(10 s environ, le texte mot pour mot) ; sans eux, le premier échantillon du jeu, sans texte : seul
-le timbre est alors copié et la ressemblance est moindre.
+Qwen3-TTS imite la voix à partir d'**un seul** extrait de quelques secondes **et du texte prononcé
+dedans** : les autres échantillons du jeu ne lui servent pas, en ajouter n'améliore rien. Pour le
+choisir : moteur Qwen3-TTS sélectionné, écran **Ma voix**, menu ⋯ d'un échantillon net › *Utiliser
+comme extrait pour Qwen3-TTS…* ; régler la durée (8 à 12 s suffisent), écouter, recopier le texte
+mot pour mot (proposé d'après le texte modèle). L'extrait est rangé dans
+`~/.local/share/vocalise/qwen/voix/<jeu>.wav` et `<jeu>.txt` (un extrait remplacé part dans
+`voix/corbeille/`). Sans extrait, Qwen prend le premier échantillon du jeu, sans texte : seul le
+timbre est alors copié et la ressemblance est moindre.
 
 ### 6. Votre première voix
 

@@ -185,6 +185,8 @@ pub enum Dialogue {
     SupprimerJeu { jeu: String, n: usize },
     Exporter { chemin: PathBuf, nom: String, erreur: Option<String> },
     RemplacerTexte { chemin: PathBuf },
+    /// Extrait d'un échantillon comme référence de Qwen3-TTS pour le jeu actif.
+    ReferenceQwen { echantillon: PathBuf, secondes: f32, texte: String, erreur: Option<String> },
 }
 
 #[derive(Default)]
@@ -252,6 +254,8 @@ pub struct App {
     pub enregistrement: Option<Enregistrement>,
     pub traitement: bool,
     pub dernier_ajout: Option<PathBuf>,
+    /// Référence de Qwen3-TTS préparée pour le jeu actif.
+    pub reference_qwen: Option<qwen::Reference>,
 
     // Diagnostic de l'installation
     pub diagnostic: Option<Vec<diagnostic::Verification>>,
@@ -319,6 +323,7 @@ impl App {
             lecture: None,
             jeux: Vec::new(),
             echantillons: Vec::new(),
+            reference_qwen: None,
             modeles,
             modele_idx: 0,
             micros,
@@ -935,6 +940,80 @@ impl App {
         } else {
             voicesets::echantillons(&self.cfg.voicesets_dir(), &self.cfg.jeu_actif)
         };
+        self.reference_qwen = if self.cfg.jeu_actif.is_empty() { None } else { qwen::reference_preparee(&self.cfg.jeu_actif) };
+    }
+
+    // -------------------------------------------------------------- référence de Qwen3-TTS
+
+    /// Ouvre le dialogue « extrait pour Qwen3-TTS », avec le début du texte modèle lu dans
+    /// l'échantillon (reconnu à son étiquette) comme proposition de texte.
+    pub fn ouvrir_reference_qwen(&mut self, echantillon: &Path, nom: &str) {
+        let secondes = qwen::EXTRAIT_DEFAUT;
+        let texte = self
+            .modeles
+            .iter()
+            .find(|(t, _)| {
+                let e = etiquette_modele(t);
+                !e.is_empty() && nom.contains(&e)
+            })
+            .map(|(_, corps)| qwen::texte_propose(corps, secondes))
+            .unwrap_or_default();
+        self.dialogue = Some(Dialogue::ReferenceQwen { echantillon: echantillon.to_path_buf(), secondes, texte, erreur: None });
+    }
+
+    fn chemin_apercu_qwen() -> PathBuf {
+        std::env::temp_dir().join(format!("vocalise_extrait_qwen_{}.wav", std::process::id()))
+    }
+
+    /// Écoute (ou arrête) l'extrait tel qu'il serait enregistré.
+    pub fn ecouter_extrait_qwen(&mut self, echantillon: &Path, secondes: f32) -> Result<f32, String> {
+        let p = Self::chemin_apercu_qwen();
+        if self.en_lecture(&p) {
+            self.basculer_lecture(&p);
+            return Ok(0.0);
+        }
+        let d = qwen::ecrire_extrait(echantillon, secondes, &p)?;
+        self.basculer_lecture(&p);
+        Ok(d)
+    }
+
+    fn arreter_apercu_qwen(&mut self) {
+        let p = Self::chemin_apercu_qwen();
+        if self.en_lecture(&p) {
+            self.basculer_lecture(&p);
+        }
+    }
+
+    pub fn enregistrer_reference_qwen(&mut self, echantillon: &Path, secondes: f32, texte: &str) -> Result<(), String> {
+        self.arreter_apercu_qwen();
+        let jeu = self.cfg.jeu_actif.clone();
+        if let Some(r) = &self.reference_qwen {
+            if self.en_lecture(&r.wav) {
+                self.basculer_lecture(&r.wav.clone());
+            }
+        }
+        let r = qwen::preparer_reference(echantillon, secondes, &jeu, texte)?;
+        self.succes(format!("Extrait de {} prêt : Qwen3-TTS l'utilisera pour le jeu « {jeu} ».", widgets_duree(r.duree)));
+        self.rafraichir_echantillons();
+        Ok(())
+    }
+
+    pub fn fermer_reference_qwen(&mut self) {
+        self.arreter_apercu_qwen();
+    }
+
+    pub fn retirer_reference_qwen(&mut self) {
+        let jeu = self.cfg.jeu_actif.clone();
+        if let Some(r) = self.reference_qwen.clone() {
+            if self.en_lecture(&r.wav) {
+                self.basculer_lecture(&r.wav);
+            }
+        }
+        match qwen::retirer_reference(&jeu) {
+            Ok(()) => self.succes(format!("Extrait retiré (déplacé dans la corbeille de Qwen3-TTS) : le jeu « {jeu} » sert tel quel.")),
+            Err(e) => self.erreur(format!("Impossible de retirer l'extrait : {e}")),
+        }
+        self.rafraichir_echantillons();
     }
 
     pub fn choisir_jeu(&mut self, jeu: &str) {
@@ -1176,6 +1255,10 @@ impl App {
             }
         }
     }
+}
+
+fn widgets_duree(s: f32) -> String {
+    ui::widgets::duree_lisible(s)
 }
 
 fn widgets_min() -> f32 {

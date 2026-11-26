@@ -27,7 +27,8 @@ incompatible avec l'environnement d'AllTalk, ne jamais l'y installer). `moteur_q
 racine, embarqué dans l'application par `include_str!`) est lancé pour une génération : ligne JSON
 « prêt », puis une demande JSON par ligne sur stdin, une réponse par ligne sur stdout (journaux sur
 stderr → `qwen.log`), fin à la fermeture de stdin. Référence de voix : `qwen/voix/<nom>.wav` + `.txt`
-(texte exact de l'extrait), sinon premier échantillon du jeu en mode timbre seul (moins fidèle).
+(texte exact de l'extrait, choisi dans Ma voix : menu d'un échantillon, l'ancien va dans
+`qwen/voix/corbeille/`), sinon premier échantillon du jeu en mode timbre seul (moins fidèle).
 
 ## Windows
 
@@ -74,7 +75,7 @@ vocalise-gui --capture <dossier> [--theme clair|sombre] [--taille 860x560]
 ```
 
 Le mode `--capture` écrit un PNG par écran (synthese, ma-voix, reglages, confirmation,
-enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour, synthese-qwen) puis quitte. **C'est le seul moyen de voir l'interface depuis
+enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour, synthese-qwen, ma-voix-qwen, extrait-qwen) puis quitte. **C'est le seul moyen de voir l'interface depuis
 une session Claude** (pas de capture d'écran du bureau) : l'utiliser après tout changement visuel.
 Il ne démarre rien, n'enregistre rien et ne sauvegarde pas la config. La fenêtre de capture s'ouvre
 via X11 (XWayland), au-dessus des autres : sous Wayland, une fenêtre recouverte n'est plus redessinée

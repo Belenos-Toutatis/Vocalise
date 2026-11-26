@@ -12,6 +12,8 @@ enum Issue {
     Rester,
     Fermer,
     Valider,
+    /// Écouter (ou arrêter) l'aperçu de l'extrait pour Qwen3-TTS.
+    Ecouter,
 }
 
 pub fn afficher(app: &mut App, ctx: &egui::Context) {
@@ -24,6 +26,7 @@ pub fn afficher(app: &mut App, ctx: &egui::Context) {
         .inner_margin(Margin::same(26))
         .shadow(ctx.style().visuals.window_shadow);
     let mut issue = Issue::Rester;
+    let apercu_en_lecture = app.lecture.as_ref().is_some_and(|l| l.to_string_lossy().contains("vocalise_extrait_qwen_"));
     let reponse = Modal::new(Id::new("dialogue_vocalise"))
         .frame(cadre)
         .backdrop_color(egui::Color32::from_black_alpha(if ctx.style().visuals.dark_mode { 150 } else { 90 }))
@@ -58,6 +61,9 @@ pub fn afficher(app: &mut App, ctx: &egui::Context) {
                 ),
                 Dialogue::Exporter { chemin, nom, erreur } => exporter(ui, chemin, nom, erreur),
                 Dialogue::RemplacerTexte { chemin } => remplacer_texte(ui, chemin),
+                Dialogue::ReferenceQwen { echantillon, secondes, texte, erreur } => {
+                    reference_qwen(ui, echantillon, secondes, texte, erreur, apercu_en_lecture)
+                }
             };
         });
     if reponse.should_close() && matches!(issue, Issue::Rester) {
@@ -65,7 +71,17 @@ pub fn afficher(app: &mut App, ctx: &egui::Context) {
     }
     match issue {
         Issue::Rester => app.dialogue = Some(d),
-        Issue::Fermer => {}
+        Issue::Ecouter => {
+            if let Dialogue::ReferenceQwen { echantillon, secondes, erreur, .. } = &mut d {
+                *erreur = app.ecouter_extrait_qwen(echantillon, *secondes).err();
+            }
+            app.dialogue = Some(d);
+        }
+        Issue::Fermer => {
+            if matches!(d, Dialogue::ReferenceQwen { .. }) {
+                app.fermer_reference_qwen();
+            }
+        }
         Issue::Valider => match d {
             Dialogue::NouveauJeu { nom, .. } => {
                 if let Err(e) = app.creer_jeu(&nom) {
@@ -80,6 +96,11 @@ pub fn afficher(app: &mut App, ctx: &egui::Context) {
                 }
             }
             Dialogue::RemplacerTexte { chemin } => app.charger_texte(&chemin),
+            Dialogue::ReferenceQwen { echantillon, secondes, texte, .. } => {
+                if let Err(e) = app.enregistrer_reference_qwen(&echantillon, secondes, &texte) {
+                    app.dialogue = Some(Dialogue::ReferenceQwen { echantillon, secondes, texte, erreur: Some(e) });
+                }
+            }
         },
     }
 }
@@ -217,4 +238,65 @@ fn remplacer_texte(ui: &mut Ui, chemin: &std::path::Path) -> Issue {
         return Issue::Fermer;
     }
     issue
+}
+
+fn reference_qwen(
+    ui: &mut Ui,
+    echantillon: &std::path::Path,
+    secondes: &mut f32,
+    texte: &mut String,
+    erreur: &mut Option<String>,
+    en_lecture: bool,
+) -> Issue {
+    let p = pal(ui);
+    let mut issue = Issue::Rester;
+    icone(ui, "Q", p.accent_doux, p.accent_texte);
+    titre(ui, "Extrait pour Qwen3-TTS");
+    corps(
+        ui,
+        "Qwen3-TTS imite votre voix à partir d'un seul extrait court et du texte exact qui y est prononcé. Plus le texte est juste, plus la voix est fidèle.",
+    );
+    widgets::secondaire(ui, format!("Échantillon : {}", echantillon.file_name().unwrap_or_default().to_string_lossy()));
+
+    widgets::etiquette(ui, "Durée de l'extrait (début de l'échantillon)");
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if widgets::bouton_lecture(ui, en_lecture, true).on_hover_text("Écouter l'extrait tel qu'il sera gardé").clicked() {
+            issue = Issue::Ecouter;
+        }
+        let l = ui.available_width() - 64.0;
+        let avant = *secondes;
+        widgets::curseur(ui, secondes, crate::qwen::EXTRAIT_MIN, crate::qwen::EXTRAIT_MAX, 1.0, l);
+        if *secondes != avant {
+            *erreur = None;
+        }
+        ui.label(RichText::new(format!("{} s", *secondes as u32)).font(theme::police_forte(15.0)).color(p.texte));
+    });
+    widgets::secondaire(ui, "Coupé dans un silence juste avant cette durée. 8 à 12 s suffisent : plus long, chaque génération est plus lente.");
+
+    widgets::etiquette(ui, "Texte prononcé dans l'extrait, mot pour mot");
+    let r = ui.add(
+        egui::TextEdit::multiline(texte)
+            .hint_text(RichText::new("Écoutez l'extrait et recopiez exactement ce que vous dites.").color(p.texte_3))
+            .desired_width(ui.available_width())
+            .desired_rows(4)
+            .margin(egui::Margin::symmetric(10, 8))
+            .font(theme::police(theme::TAILLE_CORPS)),
+    );
+    if r.changed() {
+        *erreur = None;
+    }
+    match erreur {
+        Some(e) => {
+            ui.label(RichText::new(format!("⚠ {e}")).size(13.5).color(p.danger_texte));
+        }
+        None => {
+            widgets::secondaire(ui, "Écoutez l'extrait : le texte doit s'arrêter au dernier mot entendu. Une proposition tirée du texte modèle est donnée quand l'échantillon en vient.");
+        }
+    }
+    let valide = !texte.trim().is_empty();
+    match boutons(ui, Bouton::principal("Utiliser cet extrait").actif(valide)) {
+        Issue::Rester => issue,
+        i => i,
+    }
 }

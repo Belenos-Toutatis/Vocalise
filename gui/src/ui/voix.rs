@@ -10,7 +10,13 @@ use std::path::PathBuf;
 const LARGEUR_LISTE: f32 = 320.0;
 
 pub fn afficher(app: &mut App, ui: &mut Ui) {
-    widgets::titre_page(ui, "Ma voix", "Enregistrez des échantillons de votre voix : AllTalk s'en sert pour l'imiter.");
+    let qwen = app.cfg.moteur == crate::paths::Moteur::Qwen;
+    let sous_titre = if qwen {
+        "Enregistrez des échantillons de votre voix, puis choisissez l'extrait dont Qwen3-TTS se sert pour l'imiter."
+    } else {
+        "Enregistrez des échantillons de votre voix : AllTalk s'en sert pour l'imiter."
+    };
+    widgets::titre_page(ui, "Ma voix", sous_titre);
     let large = ui.available_width() >= 800.0;
     if large {
         let h = ui.available_height();
@@ -25,6 +31,9 @@ pub fn afficher(app: &mut App, ui: &mut Ui) {
             ui.allocate_ui_with_layout(vec2(LARGEUR_LISTE, h), Layout::top_down(Align::LEFT), |ui| {
                 widgets::defiler(ui, ScrollArea::vertical().id_salt("voix_droite").auto_shrink([false, false]), false, |ui| {
                     ui.spacing_mut().item_spacing.y = theme::ECART;
+                    if qwen {
+                        carte_qwen(app, ui);
+                    }
                     carte_jeu(app, ui);
                     carte_conseils(ui);
                     ui.add_space(4.0);
@@ -37,6 +46,9 @@ pub fn afficher(app: &mut App, ui: &mut Ui) {
         widgets::defiler(ui, ScrollArea::vertical().id_salt("voix_page").auto_shrink([false, false]), false, |ui| {
             ui.spacing_mut().item_spacing.y = theme::ECART;
             carte_studio(app, ui, Some(h));
+            if qwen {
+                carte_qwen(app, ui);
+            }
             carte_jeu(app, ui);
             carte_conseils(ui);
         });
@@ -64,6 +76,65 @@ fn carte_conseils(ui: &mut Ui) {
     });
 }
 
+// ------------------------------------------------------------------ extrait pour Qwen3-TTS
+
+fn carte_qwen(app: &mut App, ui: &mut Ui) {
+    let p = pal(ui);
+    let mut ecouter = None;
+    let mut retirer = false;
+    let verrou = app.enregistrement.is_some() || app.traitement;
+    widgets::carte(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        widgets::titre_carte(ui, "Extrait pour Qwen3-TTS");
+        match app.reference_qwen.clone() {
+            Some(r) => {
+                Frame::new().fill(p.creux).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if widgets::bouton_lecture(ui, app.en_lecture(&r.wav), app.enregistrement.is_none()).clicked() {
+                            ecouter = Some(r.wav.clone());
+                        }
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.label(RichText::new(format!("Extrait de {}", widgets::duree_lisible(r.duree))).size(14.0).color(p.texte));
+                            ui.label(RichText::new("avec son texte").size(12.5).color(p.succes));
+                        });
+                    });
+                });
+                let apercu = if r.texte.chars().count() > 140 {
+                    format!("« {}… »", r.texte.chars().take(140).collect::<String>())
+                } else {
+                    format!("« {} »", r.texte)
+                };
+                ui.add(egui::Label::new(RichText::new(apercu).size(13.0).italics().color(p.texte_2)).wrap())
+                    .on_hover_text(&r.texte);
+                widgets::secondaire(ui, "Pour en changer : menu ⋯ d'un échantillon › Utiliser comme extrait.");
+                if Bouton::discret("Retirer l'extrait").petit().actif(!verrou).infobulle("Déplacé dans la corbeille de Qwen3-TTS, jamais effacé").ui(ui).clicked() {
+                    retirer = true;
+                }
+            }
+            None => {
+                widgets::encadre(
+                    ui,
+                    Ton::Avert,
+                    "Aucun extrait choisi : Qwen3-TTS ne copie que le timbre du premier échantillon, la voix est moins fidèle.",
+                );
+                widgets::secondaire(
+                    ui,
+                    "Choisissez un échantillon net (menu ⋯ › Utiliser comme extrait), puis recopiez le texte prononcé. Un seul extrait de 8 à 12 s suffit : Qwen n'utilise pas les autres.",
+                );
+            }
+        }
+    });
+    if let Some(w) = ecouter {
+        app.basculer_lecture(&w);
+    }
+    if retirer {
+        app.retirer_reference_qwen();
+    }
+}
+
 // ------------------------------------------------------------------ jeu de voix et échantillons
 
 enum Action {
@@ -75,6 +146,7 @@ enum Action {
     Ecouter(PathBuf),
     Exporter(PathBuf, String),
     Retirer(PathBuf),
+    ReferenceQwen(PathBuf, String),
 }
 
 fn carte_jeu(app: &mut App, ui: &mut Ui) {
@@ -210,6 +282,11 @@ fn carte_jeu(app: &mut App, ui: &mut Ui) {
                     egui::popup_below_widget(ui, id_menu, &r, PopupCloseBehavior::CloseOnClick, |ui| {
                         ui.set_min_width(280.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
+                        if app.cfg.moteur == crate::paths::Moteur::Qwen
+                            && widgets::element_menu(ui, "Q", "Utiliser comme extrait pour Qwen3-TTS…", false).clicked()
+                        {
+                            action = Some(Action::ReferenceQwen(e.chemin.clone(), e.nom.clone()));
+                        }
                         if widgets::element_menu(ui, "⇪", "Exporter en voix simple…", false).clicked() {
                             action = Some(Action::Exporter(e.chemin.clone(), e.nom.clone()));
                         }
@@ -242,6 +319,7 @@ fn carte_jeu(app: &mut App, ui: &mut Ui) {
             app.dialogue = Some(Dialogue::Exporter { chemin: c, nom, erreur: None });
         }
         Some(Action::Retirer(c)) => app.retirer_echantillon(&c),
+        Some(Action::ReferenceQwen(c, nom)) => app.ouvrir_reference_qwen(&c, &nom),
         _ => {}
     }
 }

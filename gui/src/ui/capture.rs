@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Captures produites, dans l'ordre.
-const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour", "synthese-qwen"];
+const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour", "synthese-qwen", "ma-voix-qwen", "extrait-qwen"];
 
 pub struct Capture {
     dossier: PathBuf,
@@ -169,6 +169,17 @@ fn preparer(app: &mut App, etape: usize) {
             app.diagnostic = None;
             app.ecran = Ecran::Synthese;
             app.cfg.moteur = crate::paths::Moteur::Qwen;
+        }
+        "ma-voix-qwen" => {
+            app.ecran = Ecran::Voix;
+            app.cfg.moteur = crate::paths::Moteur::Qwen;
+        }
+        "extrait-qwen" => {
+            app.ecran = Ecran::Voix;
+            app.cfg.moteur = crate::paths::Moteur::Qwen;
+            if let Some(e) = app.echantillons.first().cloned() {
+                app.ouvrir_reference_qwen(&e.chemin, &e.nom);
+            }
         }
         "mises-a-jour" => {
             // Réglages, défilé jusqu'à la carte « Mises à jour » (version simulée posée à l'étape reglages).
