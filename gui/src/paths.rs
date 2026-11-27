@@ -15,7 +15,6 @@ pub enum Moteur {
 }
 
 impl Moteur {
-    pub const TOUS: [Moteur; 2] = [Moteur::Xtts, Moteur::Qwen];
 
     pub fn nom(self) -> &'static str {
         match self {
@@ -56,6 +55,9 @@ pub struct Config {
     pub format: crate::audio::Format,
     /// Moteur de synthèse : XTTS (AllTalk) ou Qwen3-TTS.
     pub moteur: Moteur,
+    /// Voix choisie pour Qwen3-TTS : nom d'une voix préparée (`qwen/voix/<nom>.wav`) ou
+    /// "voiceset:nom" (premier échantillon du jeu, timbre seul). `voix` reste celle d'XTTS.
+    pub voix_qwen: String,
     /// Vérifier au démarrage (au plus une fois par jour) s'il existe une version plus récente.
     pub verifier_maj: bool,
     /// Date (AAAA-MM-JJ) de la dernière vérification de mise à jour réussie.
@@ -82,6 +84,7 @@ impl Default for Config {
             temperature: 0.7,
             format: crate::audio::Format::Wav,
             moteur: Moteur::Xtts,
+            voix_qwen: "emmanuel".into(),
             verifier_maj: true,
             maj_verifiee_le: None,
             avertissement_chargement: None,

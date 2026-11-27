@@ -13,6 +13,8 @@ use crate::alltalk::{Progression, Requete};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 const SCRIPT: &str = include_str!("../../moteur_qwen.py");
 
@@ -95,6 +97,10 @@ pub fn reference(voix: &str, voices_dir: &Path, voicesets_dir: &Path) -> Result<
     if simple.is_file() {
         return Ok((simple, String::new()));
     }
+    // Nom seul sans extrait préparé : jeu de voix du même nom, timbre seul.
+    if jeu.is_none() && Path::new(voix).extension().is_none() && voicesets_dir.join(voix).is_dir() {
+        return reference(&crate::voicesets::nom_api(voix), voices_dir, voicesets_dir);
+    }
     Err(format!("Voix introuvable pour Qwen3-TTS : {voix}"))
 }
 
@@ -103,9 +109,10 @@ pub const EXTRAIT_DEFAUT: f32 = 10.0;
 pub const EXTRAIT_MIN: f32 = 4.0;
 pub const EXTRAIT_MAX: f32 = 20.0;
 
-/// Référence préparée pour une voix : extrait et texte prononcé dedans.
+/// Voix de Qwen3-TTS : extrait préparé et texte prononcé dedans (`voix/<nom>.wav` + `.txt`).
 #[derive(Clone, Debug)]
 pub struct Reference {
+    pub nom: String,
     pub wav: PathBuf,
     pub texte: String,
     pub duree: f32,
@@ -115,11 +122,6 @@ fn dossier_voix() -> PathBuf {
     dossier().join("voix")
 }
 
-/// Référence préparée de `nom` (jeu de voix ou voix simple sans `.wav`), s'il y en a une.
-pub fn reference_preparee(nom: &str) -> Option<Reference> {
-    reference_preparee_dans(&dossier_voix(), nom)
-}
-
 fn reference_preparee_dans(d: &Path, nom: &str) -> Option<Reference> {
     let wav = d.join(format!("{nom}.wav"));
     if !wav.is_file() {
@@ -127,7 +129,83 @@ fn reference_preparee_dans(d: &Path, nom: &str) -> Option<Reference> {
     }
     let texte = std::fs::read_to_string(wav.with_extension("txt")).unwrap_or_default().trim().to_string();
     let duree = crate::audio::duree(&wav).unwrap_or(0.0);
-    Some(Reference { wav, texte, duree })
+    Some(Reference { nom: nom.to_string(), wav, texte, duree })
+}
+
+/// Toutes les voix préparées pour Qwen3-TTS, par ordre alphabétique.
+pub fn voix_preparees() -> Vec<Reference> {
+    voix_preparees_dans(&dossier_voix())
+}
+
+fn voix_preparees_dans(d: &Path) -> Vec<Reference> {
+    let mut noms: Vec<String> = std::fs::read_dir(d)
+        .map(|it| {
+            it.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "wav"))
+                .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+                // « x.nouveau.wav » : écriture en cours.
+                .filter(|n| !n.contains('.'))
+                .collect()
+        })
+        .unwrap_or_default();
+    noms.sort_by_key(|n| n.to_lowercase());
+    noms.iter().filter_map(|n| reference_preparee_dans(d, n)).collect()
+}
+
+/// Dossier des enregistrements faits pour Qwen3-TTS (nettoyés, jamais supprimés) : ils servent
+/// de source aux extraits sans entrer dans un jeu de voix d'XTTS.
+pub fn dossier_enregistrements() -> PathBuf {
+    dossier().join("enregistrements")
+}
+
+/// Nettoie un enregistrement brut (silences, volume) et le range dans `enregistrements/`.
+pub fn ranger_enregistrement(brut: &crate::audio::Wav, nom: &str) -> Result<PathBuf, String> {
+    let d = dossier_enregistrements();
+    std::fs::create_dir_all(&d).map_err(|e| format!("Impossible de créer {} : {e}", d.display()))?;
+    let propre = crate::audio::nettoyer(brut)?;
+    let base = crate::paths::nom_sur(nom);
+    let mut dest = d.join(format!("{base}.wav"));
+    let mut i = 2;
+    while dest.exists() {
+        dest = d.join(format!("{base}-{i}.wav"));
+        i += 1;
+    }
+    let part = dest.with_extension("wav.part");
+    crate::audio::ecrire_i16(&part, &propre)?;
+    std::fs::rename(&part, &dest).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("Impossible d'écrire {} : {e}", dest.display())
+    })?;
+    Ok(dest)
+}
+
+/// Fichiers utilisables comme source d'un extrait : enregistrements faits pour Qwen3-TTS (les
+/// plus récents d'abord), puis échantillons de chaque jeu de voix d'XTTS. (libellé, chemin)
+pub fn sources(voicesets_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut res = Vec::new();
+    let mut enr: Vec<PathBuf> = std::fs::read_dir(dossier_enregistrements())
+        .map(|it| it.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "wav")).collect())
+        .unwrap_or_default();
+    enr.sort();
+    enr.reverse();
+    for p in enr {
+        let n = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        res.push((format!("Enregistrement Qwen · {n}"), p));
+    }
+    for jeu in crate::voicesets::lister_jeux(voicesets_dir) {
+        for e in crate::voicesets::echantillons(voicesets_dir, &jeu) {
+            res.push((format!("Jeu XTTS « {jeu} » · {}", e.nom), e.chemin));
+        }
+    }
+    res
+}
+
+/// Copie l'extrait d'une voix Qwen3-TTS dans un jeu de voix d'XTTS (nouvel échantillon).
+pub fn copier_vers_jeu(r: &Reference, voicesets_dir: &Path, jeu: &str) -> Result<PathBuf, String> {
+    let w = crate::audio::lire(&r.wav).map_err(|e| format!("Lecture de {} impossible : {e}", r.wav.display()))?;
+    let nom = format!("{jeu}-{}-qwen-{}", crate::paths::horodatage(), r.nom);
+    crate::voicesets::ajouter_echantillon(voicesets_dir, jeu, &w, &nom)
 }
 
 /// Début de l'échantillon, coupé dans un silence vers `secondes` (au plus tard), en PCM 16 bits.
@@ -226,13 +304,15 @@ fn lire(sortie: &mut impl BufRead, journal: &Path) -> Result<serde_json::Value, 
 }
 
 /// Synthétise `req.texte` avec Qwen3-TTS : même découpage, même progression et même assemblage
-/// (pause 0,25 s, PCM 16 bits) que `alltalk::generer`.
+/// (pause 0,25 s, PCM 16 bits) que `alltalk::generer`. Quand `arret` passe à vrai, le processus
+/// est tué aussitôt, même au milieu d'un morceau.
 pub fn generer(
     req: &Requete,
     voices_dir: &Path,
     voicesets_dir: &Path,
     sortie: &Path,
     progression: &dyn Fn(Progression),
+    arret: &Arc<AtomicBool>,
 ) -> Result<PathBuf, String> {
     let morceaux = crate::texte::decouper(&req.texte);
     if morceaux.is_empty() {
@@ -269,6 +349,24 @@ pub fn generer(
         .map_err(|e| format!("Impossible de lancer Qwen3-TTS ({}) : {e}", py.display()))?;
     let mut entree = enfant.stdin.take().expect("entrée du processus");
     let mut lecteur = BufReader::new(enfant.stdout.take().expect("sortie du processus"));
+    // Surveillance de la demande d'arrêt : la lecture des réponses bloque, c'est ce fil qui tue
+    // le processus (la lecture reçoit alors une fin de fichier).
+    let enfant = Arc::new(Mutex::new(enfant));
+    let fini = Arc::new(AtomicBool::new(false));
+    let veilleur = {
+        let (enfant, fini, arret) = (enfant.clone(), fini.clone(), arret.clone());
+        std::thread::spawn(move || {
+            while !fini.load(Ordering::Relaxed) {
+                if arret.load(Ordering::Relaxed) {
+                    if let Ok(mut e) = enfant.lock() {
+                        let _ = e.kill();
+                    }
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        })
+    };
 
     let resultat = (|| -> Result<Vec<PathBuf>, String> {
         let etat = lire(&mut lecteur, &journal)?;
@@ -279,6 +377,9 @@ pub fn generer(
         let total = morceaux.len();
         let mut fichiers = Vec::with_capacity(total);
         for (i, m) in morceaux.iter().enumerate() {
+            if arret.load(Ordering::Relaxed) {
+                return Err(crate::alltalk::INTERROMPUE.into());
+            }
             progression(Progression { morceau: i + 1, total });
             let f = tmp.join(format!("morceau_{:03}.wav", i + 1));
             let demande = serde_json::json!({ "texte": m, "sortie": f.to_string_lossy() });
@@ -293,10 +394,19 @@ pub fn generer(
         Ok(fichiers)
     })();
     drop(entree); // fin de l'entrée : le script se termine et rend la mémoire
-    if resultat.is_err() {
-        let _ = enfant.kill();
+    fini.store(true, Ordering::Relaxed);
+    let _ = veilleur.join();
+    if let Ok(mut e) = enfant.lock() {
+        if resultat.is_err() {
+            let _ = e.kill();
+        }
+        let _ = e.wait();
     }
-    let _ = enfant.wait();
+    // Processus tué à la demande : l'erreur de lecture qui en résulte n'en est pas une.
+    let resultat = match resultat {
+        Err(_) if arret.load(Ordering::Relaxed) => Err(crate::alltalk::INTERROMPUE.to_string()),
+        r => r,
+    };
 
     let ecrit = resultat.and_then(|fichiers| {
         let w = crate::audio::concatener(&fichiers, 0.25)?;
@@ -338,6 +448,10 @@ mod tests {
         let (w, _) = reference("simple-test-qwen.wav", &voices, &jeux).unwrap();
         assert_eq!(w, voices.join("simple-test-qwen.wav"));
         assert!(reference("voiceset:absent-test-qwen", &voices, &jeux).is_err());
+        // Nom seul sans voix préparée : jeu du même nom, timbre seul.
+        let (w, t) = reference("jeu-test-qwen", &voices, &jeux).unwrap();
+        assert_eq!(w, jeux.join("jeu-test-qwen").join("a.wav"));
+        assert!(t.is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -358,9 +472,15 @@ mod tests {
         let r2 = preparer_reference_dans(&voix, &ech, 5.0, "jeu", "Bonjour.").unwrap();
         assert!(r2.duree <= 5.01);
         assert_eq!(std::fs::read_dir(voix.join("corbeille")).unwrap().count(), 2);
+        // Liste des voix préparées : « jeu » et « autre », pas les écritures en cours.
+        preparer_reference_dans(&voix, &ech, 6.0, "autre", "Bonjour.").unwrap();
+        std::fs::write(voix.join("x.nouveau.wav"), b"x").unwrap();
+        let noms: Vec<String> = voix_preparees_dans(&voix).into_iter().map(|r| r.nom).collect();
+        assert_eq!(noms, ["autre", "jeu"]);
         retirer_reference_dans(&voix, "jeu").unwrap();
         assert!(reference_preparee_dans(&voix, "jeu").is_none());
         assert_eq!(std::fs::read_dir(voix.join("corbeille")).unwrap().count(), 4);
+        assert_eq!(voix_preparees_dans(&voix).len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -371,6 +491,33 @@ mod tests {
         assert!(t.starts_with("Bonjour à tous,"), "{t}");
         assert!(!t.contains('#'));
         assert_eq!(texte_propose(m, 60.0), m.lines().nth(1).unwrap());
+    }
+
+    /// Interruption réelle : le processus est tué au milieu d'un morceau, sans fichier produit.
+    /// `cargo test -- --ignored integration_qwen_interruption`.
+    #[test]
+    #[ignore]
+    fn integration_qwen_interruption() {
+        let cfg = crate::paths::Config::default();
+        let req = Requete {
+            texte: "Bonjour. Ceci est un long essai qui ne doit pas aller à son terme. ".repeat(6),
+            voix: "emmanuel".into(),
+            langue: "fr".into(),
+            vitesse: 1.0,
+            temperature: 0.7,
+        };
+        let sortie = std::env::temp_dir().join("vocalise_integration_qwen_interruption.wav");
+        let arret = Arc::new(AtomicBool::new(false));
+        let a = arret.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            a.store(true, Ordering::Relaxed);
+        });
+        let debut = std::time::Instant::now();
+        let r = generer(&req, &cfg.voices_dir(), &cfg.voicesets_dir(), &sortie, &|_| {}, &arret);
+        assert_eq!(r.unwrap_err(), crate::alltalk::INTERROMPUE);
+        assert!(debut.elapsed().as_secs_f32() < 12.0, "{:?}", debut.elapsed());
+        assert!(!sortie.exists());
     }
 
     /// Génération réelle (environnement Qwen installé) : `cargo test -- --ignored integration_qwen`.
@@ -386,7 +533,7 @@ mod tests {
             temperature: 0.7,
         };
         let sortie = std::env::temp_dir().join("vocalise_integration_qwen.wav");
-        let p = generer(&req, &cfg.voices_dir(), &cfg.voicesets_dir(), &sortie, &|_| {}).unwrap();
+        let p = generer(&req, &cfg.voices_dir(), &cfg.voicesets_dir(), &sortie, &|_| {}, &Arc::new(AtomicBool::new(false))).unwrap();
         assert!(crate::audio::duree(&p).unwrap() > 1.0);
         let _ = std::fs::remove_file(p);
     }

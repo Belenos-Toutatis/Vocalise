@@ -10,6 +10,7 @@ use crate::{alltalk, diagnostic, maj, qwen, recorder, texte, ui, voicesets};
 use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -110,6 +111,8 @@ pub enum Msg {
     Conversion(Format),
     Generation(Result<Genere, String>),
     Echantillon(Result<PathBuf, String>),
+    /// Enregistrement fait pour Qwen3-TTS, nettoyé et rangé (source d'un extrait).
+    EnregistrementQwen(Result<PathBuf, String>),
     ServeurArrete,
     Diagnostic(Vec<diagnostic::Verification>),
     /// Résultat d'une vérification de mise à jour (`manuelle` = demandée par un bouton).
@@ -140,6 +143,14 @@ pub struct Generation {
     pub phase: Phase,
     pub debut: Instant,
     pub sortie: PathBuf,
+    /// Demande d'interruption, lue par le fil de génération.
+    pub arret: Arc<AtomicBool>,
+}
+
+impl Generation {
+    pub fn interrompue(&self) -> bool {
+        self.arret.load(Ordering::Relaxed)
+    }
 }
 
 pub enum EtatServeur {
@@ -159,6 +170,8 @@ pub enum Source {
 
 pub struct Enregistrement {
     pub source: Source,
+    /// Fait depuis l'onglet Qwen3-TTS : rangé à part, hors des jeux de voix d'XTTS.
+    pub pour_qwen: bool,
     pub jeu: String,
     pub nom: String,
     /// Niveau affiché (dBFS), avec retombée progressive.
@@ -185,8 +198,19 @@ pub enum Dialogue {
     SupprimerJeu { jeu: String, n: usize },
     Exporter { chemin: PathBuf, nom: String, erreur: Option<String> },
     RemplacerTexte { chemin: PathBuf },
-    /// Extrait d'un échantillon comme référence de Qwen3-TTS pour le jeu actif.
-    ReferenceQwen { echantillon: PathBuf, secondes: f32, texte: String, erreur: Option<String> },
+    /// Voix de Qwen3-TTS : extrait d'un fichier source et texte prononcé dedans.
+    ReferenceQwen {
+        /// Fichier dont l'extrait est tiré (None : aucune source disponible).
+        source: Option<PathBuf>,
+        /// Sources proposées au choix (vide : source imposée).
+        sources: Vec<(String, PathBuf)>,
+        nom: String,
+        /// Voix existante en cours de modification.
+        modifie: Option<String>,
+        secondes: f32,
+        texte: String,
+        erreur: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -254,8 +278,10 @@ pub struct App {
     pub enregistrement: Option<Enregistrement>,
     pub traitement: bool,
     pub dernier_ajout: Option<PathBuf>,
-    /// Référence de Qwen3-TTS préparée pour le jeu actif.
-    pub reference_qwen: Option<qwen::Reference>,
+    /// Voix préparées pour Qwen3-TTS.
+    pub voix_qwen: Vec<qwen::Reference>,
+    /// Onglet de l'écran Ma voix : voix d'XTTS ou de Qwen3-TTS.
+    pub onglet_voix: paths::Moteur,
 
     // Diagnostic de l'installation
     pub diagnostic: Option<Vec<diagnostic::Verification>>,
@@ -323,7 +349,8 @@ impl App {
             lecture: None,
             jeux: Vec::new(),
             echantillons: Vec::new(),
-            reference_qwen: None,
+            voix_qwen: Vec::new(),
+            onglet_voix: paths::Moteur::Xtts,
             modeles,
             modele_idx: 0,
             micros,
@@ -347,6 +374,7 @@ impl App {
             dernier_ajout: None,
             cfg,
         };
+        app.onglet_voix = app.cfg.moteur;
         app.resoudre_micro();
         app.rafraichir_jeux();
         app.rafraichir_voix();
@@ -446,7 +474,18 @@ impl App {
                             self.historique.truncate(20);
                             self.resultat = Some(g);
                         }
+                        Err(e) if e == alltalk::INTERROMPUE => self.info("Génération interrompue : aucun fichier n'a été créé."),
                         Err(e) => self.erreur(format!("La génération a échoué : {e}")),
+                    }
+                }
+                Msg::EnregistrementQwen(r) => {
+                    self.traitement = false;
+                    match r {
+                        Ok(p) => {
+                            self.info("Enregistrement nettoyé : choisissez la durée de l'extrait et recopiez le texte prononcé.");
+                            self.nouvelle_voix_qwen(Some(&p));
+                        }
+                        Err(e) => self.erreur(format!("L'enregistrement n'a pas pu être gardé : {e}")),
                     }
                 }
                 Msg::Echantillon(r) => {
@@ -732,12 +771,13 @@ impl App {
     }
 
     pub fn peut_generer(&self) -> bool {
-        self.generation.is_none() && self.moteur_pret() && !self.texte.trim().is_empty() && !self.cfg.voix.is_empty()
+        self.generation.is_none() && self.moteur_pret() && !self.texte.trim().is_empty() && !self.voix_du_moteur().is_empty()
     }
 
     /// Changement de moteur dans la carte Voix : enregistrement et nouveau diagnostic (la
     /// vérification de Qwen3-TTS n'y figure que s'il est choisi).
     pub fn moteur_change(&mut self) {
+        self.onglet_voix = self.cfg.moteur;
         self.sauver();
         self.lancer_diagnostic();
         self.info(format!("Moteur : {} ({}).", self.cfg.moteur.nom(), self.cfg.moteur.description().to_lowercase()));
@@ -761,12 +801,13 @@ impl App {
         let wav = if format == Format::Wav { sortie.clone() } else { sortie.with_extension("tmp.wav") };
         let req = alltalk::Requete {
             texte: self.texte.clone(),
-            voix: self.cfg.voix.clone(),
+            voix: self.voix_du_moteur().to_string(),
             langue: self.cfg.langue.clone(),
             vitesse: self.cfg.vitesse,
             temperature: self.cfg.temperature,
         };
-        self.generation = Some(Generation { phase: Phase::Preparation, debut: Instant::now(), sortie: sortie.clone() });
+        let arret = Arc::new(AtomicBool::new(false));
+        self.generation = Some(Generation { phase: Phase::Preparation, debut: Instant::now(), sortie: sortie.clone(), arret: arret.clone() });
         self.resultat = None;
         self.info(format!("Génération de {}…", sortie.file_name().unwrap_or_default().to_string_lossy()));
         let moteur = self.cfg.moteur;
@@ -782,8 +823,8 @@ impl App {
                     ctx_p.request_repaint();
                 };
                 let produit = match moteur {
-                    paths::Moteur::Xtts => alltalk::generer(&req, &wav, &rappel)?,
-                    paths::Moteur::Qwen => qwen::generer(&req, &voices_dir, &voicesets_dir, &wav, &rappel)?,
+                    paths::Moteur::Xtts => alltalk::generer(&req, &wav, &rappel, &arret)?,
+                    paths::Moteur::Qwen => qwen::generer(&req, &voices_dir, &voicesets_dir, &wav, &rappel, &arret)?,
                 };
                 let duree = audio::duree(&produit).unwrap_or(0.0);
                 let chemin = if format == Format::Wav {
@@ -808,6 +849,20 @@ impl App {
             })();
             let _ = tx.send(Msg::Generation(r));
             ctx.request_repaint();
+        });
+    }
+
+    /// Demande l'arrêt de la génération en cours : immédiat avec Qwen3-TTS, après le morceau en
+    /// cours avec XTTS. La conversion finale (quelques secondes) n'est pas interrompue.
+    pub fn interrompre_generation(&mut self) {
+        let Some(g) = &self.generation else { return };
+        if matches!(g.phase, Phase::Conversion(_)) || g.interrompue() {
+            return;
+        }
+        g.arret.store(true, Ordering::Relaxed);
+        self.info(match self.cfg.moteur {
+            paths::Moteur::Xtts => "Interruption : AllTalk termine le morceau en cours…",
+            paths::Moteur::Qwen => "Interruption…",
         });
     }
 
@@ -940,25 +995,99 @@ impl App {
         } else {
             voicesets::echantillons(&self.cfg.voicesets_dir(), &self.cfg.jeu_actif)
         };
-        self.reference_qwen = if self.cfg.jeu_actif.is_empty() { None } else { qwen::reference_preparee(&self.cfg.jeu_actif) };
+        self.voix_qwen = qwen::voix_preparees();
     }
 
-    // -------------------------------------------------------------- référence de Qwen3-TTS
+    // -------------------------------------------------------------- voix de Qwen3-TTS
 
-    /// Ouvre le dialogue « extrait pour Qwen3-TTS », avec le début du texte modèle lu dans
-    /// l'échantillon (reconnu à son étiquette) comme proposition de texte.
-    pub fn ouvrir_reference_qwen(&mut self, echantillon: &Path, nom: &str) {
-        let secondes = qwen::EXTRAIT_DEFAUT;
-        let texte = self
-            .modeles
+    /// Voix réglée pour le moteur choisi (`cfg.voix` pour XTTS, `cfg.voix_qwen` pour Qwen3-TTS).
+    pub fn voix_du_moteur(&self) -> &str {
+        match self.cfg.moteur {
+            paths::Moteur::Xtts => &self.cfg.voix,
+            paths::Moteur::Qwen => &self.cfg.voix_qwen,
+        }
+    }
+
+    /// Voix proposées pour Qwen3-TTS : voix préparées, puis jeux d'XTTS sans voix préparée du
+    /// même nom (« voiceset:nom », timbre seul). (valeur, libellé)
+    pub fn choix_voix_qwen(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .voix_qwen
+            .iter()
+            .map(|r| (r.nom.clone(), if r.texte.is_empty() { format!("{} (sans texte)", r.nom) } else { r.nom.clone() }))
+            .collect();
+        for j in &self.jeux {
+            if !self.voix_qwen.iter().any(|r| &r.nom == j) {
+                v.push((voicesets::nom_api(j), format!("Jeu XTTS « {j} »")));
+            }
+        }
+        v
+    }
+
+    /// Proposition de texte pour un extrait de `source` : début du texte modèle reconnu à
+    /// l'étiquette dans le nom du fichier, sinon rien.
+    fn texte_propose_pour(&self, source: &Path, secondes: f32) -> String {
+        let nom = source.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.modeles
             .iter()
             .find(|(t, _)| {
                 let e = etiquette_modele(t);
                 !e.is_empty() && nom.contains(&e)
             })
             .map(|(_, corps)| qwen::texte_propose(corps, secondes))
-            .unwrap_or_default();
-        self.dialogue = Some(Dialogue::ReferenceQwen { echantillon: echantillon.to_path_buf(), secondes, texte, erreur: None });
+            .unwrap_or_default()
+    }
+
+    /// Nom proposé pour une nouvelle voix : celui du jeu actif s'il est libre, sinon rien.
+    fn nom_propose_qwen(&self) -> String {
+        let j = &self.cfg.jeu_actif;
+        if !j.is_empty() && !self.voix_qwen.iter().any(|r| &r.nom == j) {
+            j.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Dialogue « nouvelle voix Qwen3-TTS » : depuis `source`, ou à choisir parmi les
+    /// enregistrements et les échantillons des jeux si `source` est absent.
+    pub fn nouvelle_voix_qwen(&mut self, source: Option<&Path>) {
+        let secondes = qwen::EXTRAIT_DEFAUT;
+        let (source, sources) = match source {
+            Some(s) => (Some(s.to_path_buf()), Vec::new()),
+            None => {
+                let l = qwen::sources(&self.cfg.voicesets_dir());
+                (l.first().map(|(_, p)| p.clone()), l)
+            }
+        };
+        let texte = source.as_deref().map(|s| self.texte_propose_pour(s, secondes)).unwrap_or_default();
+        self.dialogue = Some(Dialogue::ReferenceQwen {
+            source,
+            sources,
+            nom: self.nom_propose_qwen(),
+            modifie: None,
+            secondes,
+            texte,
+            erreur: None,
+        });
+    }
+
+    /// Dialogue pour refaire l'extrait ou corriger le texte d'une voix existante.
+    pub fn modifier_voix_qwen(&mut self, nom: &str) {
+        let Some(r) = self.voix_qwen.iter().find(|r| r.nom == nom).cloned() else { return };
+        self.dialogue = Some(Dialogue::ReferenceQwen {
+            source: Some(r.wav.clone()),
+            sources: Vec::new(),
+            nom: r.nom.clone(),
+            modifie: Some(r.nom.clone()),
+            secondes: r.duree.ceil().clamp(qwen::EXTRAIT_MIN, qwen::EXTRAIT_MAX),
+            texte: r.texte.clone(),
+            erreur: None,
+        });
+    }
+
+    /// Changement de source dans le dialogue : nouvelle proposition de texte.
+    pub fn source_voix_qwen(&self, source: &Path, secondes: f32) -> String {
+        self.texte_propose_pour(source, secondes)
     }
 
     fn chemin_apercu_qwen() -> PathBuf {
@@ -966,54 +1095,74 @@ impl App {
     }
 
     /// Écoute (ou arrête) l'extrait tel qu'il serait enregistré.
-    pub fn ecouter_extrait_qwen(&mut self, echantillon: &Path, secondes: f32) -> Result<f32, String> {
+    pub fn ecouter_extrait_qwen(&mut self, source: &Path, secondes: f32) -> Result<f32, String> {
         let p = Self::chemin_apercu_qwen();
         if self.en_lecture(&p) {
             self.basculer_lecture(&p);
             return Ok(0.0);
         }
-        let d = qwen::ecrire_extrait(echantillon, secondes, &p)?;
+        let d = qwen::ecrire_extrait(source, secondes, &p)?;
         self.basculer_lecture(&p);
         Ok(d)
     }
 
-    fn arreter_apercu_qwen(&mut self) {
-        let p = Self::chemin_apercu_qwen();
-        if self.en_lecture(&p) {
-            self.basculer_lecture(&p);
+    fn arreter_lecture_de(&mut self, p: &Path) {
+        if self.en_lecture(p) {
+            self.basculer_lecture(p);
         }
     }
 
-    pub fn enregistrer_reference_qwen(&mut self, echantillon: &Path, secondes: f32, texte: &str) -> Result<(), String> {
-        self.arreter_apercu_qwen();
-        let jeu = self.cfg.jeu_actif.clone();
-        if let Some(r) = &self.reference_qwen {
-            if self.en_lecture(&r.wav) {
-                self.basculer_lecture(&r.wav.clone());
-            }
+    pub fn enregistrer_voix_qwen(&mut self, source: &Path, secondes: f32, nom: &str, texte: &str) -> Result<(), String> {
+        let nom = nom.trim();
+        if !voicesets::nom_valide(nom) {
+            return Err("Nom invalide : lettres sans accent, chiffres, « - » et « _ » (40 au plus).".into());
         }
-        let r = qwen::preparer_reference(echantillon, secondes, &jeu, texte)?;
-        self.succes(format!("Extrait de {} prêt : Qwen3-TTS l'utilisera pour le jeu « {jeu} ».", widgets_duree(r.duree)));
+        self.arreter_lecture_de(&Self::chemin_apercu_qwen());
+        if let Some(r) = self.voix_qwen.iter().find(|r| r.nom == nom).cloned() {
+            self.arreter_lecture_de(&r.wav);
+        }
+        let r = qwen::preparer_reference(source, secondes, nom, texte)?;
+        self.cfg.voix_qwen = r.nom.clone();
+        self.sauver();
+        self.succes(format!("Voix Qwen3-TTS « {nom} » prête (extrait de {}). Elle est choisie pour la synthèse.", widgets_duree(r.duree)));
         self.rafraichir_echantillons();
         Ok(())
     }
 
-    pub fn fermer_reference_qwen(&mut self) {
-        self.arreter_apercu_qwen();
+    pub fn fermer_dialogue_qwen(&mut self) {
+        self.arreter_lecture_de(&Self::chemin_apercu_qwen());
     }
 
-    pub fn retirer_reference_qwen(&mut self) {
-        let jeu = self.cfg.jeu_actif.clone();
-        if let Some(r) = self.reference_qwen.clone() {
-            if self.en_lecture(&r.wav) {
-                self.basculer_lecture(&r.wav);
-            }
+    /// Retire une voix de Qwen3-TTS (wav et texte déplacés dans `qwen/voix/corbeille/`).
+    pub fn retirer_voix_qwen(&mut self, nom: &str) {
+        if let Some(r) = self.voix_qwen.iter().find(|r| r.nom == nom).cloned() {
+            self.arreter_lecture_de(&r.wav);
         }
-        match qwen::retirer_reference(&jeu) {
-            Ok(()) => self.succes(format!("Extrait retiré (déplacé dans la corbeille de Qwen3-TTS) : le jeu « {jeu} » sert tel quel.")),
-            Err(e) => self.erreur(format!("Impossible de retirer l'extrait : {e}")),
+        match qwen::retirer_reference(nom) {
+            Ok(()) => self.succes(format!("Voix « {nom} » retirée (déplacée dans la corbeille de Qwen3-TTS).")),
+            Err(e) => self.erreur(format!("Impossible de retirer la voix : {e}")),
         }
         self.rafraichir_echantillons();
+    }
+
+    /// Copie l'extrait d'une voix Qwen3-TTS dans le jeu de voix actif d'XTTS.
+    pub fn copier_voix_qwen_vers_jeu(&mut self, nom: &str) {
+        let Some(r) = self.voix_qwen.iter().find(|r| r.nom == nom).cloned() else { return };
+        let jeu = self.cfg.jeu_actif.clone();
+        if !voicesets::nom_valide(&jeu) {
+            self.erreur("Choisissez ou créez d'abord un jeu de voix XTTS.");
+            return;
+        }
+        match qwen::copier_vers_jeu(&r, &self.cfg.voicesets_dir(), &jeu) {
+            Ok(p) => {
+                self.succes(format!("Extrait de « {nom} » ajouté au jeu XTTS « {jeu} »."));
+                self.dernier_ajout = Some(p);
+            }
+            Err(e) => self.erreur(format!("Impossible de copier l'extrait : {e}")),
+        }
+        self.rafraichir_echantillons();
+        self.rafraichir_jeux();
+        self.rafraichir_voix();
     }
 
     pub fn choisir_jeu(&mut self, jeu: &str) {
@@ -1115,10 +1264,11 @@ impl App {
     /// Nom de l'échantillon tel qu'il sera écrit : `<jeu>-<horodatage>[-<étiquette>]`.
     pub fn nom_echantillon(&self, horodatage: &str) -> String {
         let etiquette = paths::nom_sur(self.etiquette_echantillon.trim());
+        let prefixe = if self.onglet_voix == paths::Moteur::Qwen { "qwen" } else { self.cfg.jeu_actif.as_str() };
         if etiquette.is_empty() {
-            format!("{}-{horodatage}", self.cfg.jeu_actif)
+            format!("{prefixe}-{horodatage}")
         } else {
-            format!("{}-{horodatage}-{etiquette}", self.cfg.jeu_actif)
+            format!("{prefixe}-{horodatage}-{etiquette}")
         }
     }
 
@@ -1126,18 +1276,20 @@ impl App {
         if self.enregistrement.is_some() || self.traitement || self.capture.is_some() {
             return;
         }
+        let pour_qwen = self.onglet_voix == paths::Moteur::Qwen;
         let jeu = self.cfg.jeu_actif.clone();
-        if !voicesets::nom_valide(&jeu) {
+        if !pour_qwen && !voicesets::nom_valide(&jeu) {
             self.erreur("Choisissez ou créez d'abord un jeu de voix.");
             return;
         }
+        let prefixe = if pour_qwen { "qwen".to_string() } else { jeu.clone() };
         let h = paths::horodatage();
         let dir = self.cfg.echantillons_dir();
         let _ = std::fs::create_dir_all(&dir);
-        let mut brut = dir.join(format!("{jeu}-{h}-brut.wav"));
+        let mut brut = dir.join(format!("{prefixe}-{h}-brut.wav"));
         let mut i = 2;
         while brut.exists() {
-            brut = dir.join(format!("{jeu}-{h}-{i}-brut.wav"));
+            brut = dir.join(format!("{prefixe}-{h}-{i}-brut.wav"));
             i += 1;
         }
         let nom = self.nom_echantillon(&h);
@@ -1151,6 +1303,7 @@ impl App {
                 self.dernier_ajout = None;
                 self.enregistrement = Some(Enregistrement {
                     source: Source::Reel(e),
+                    pour_qwen,
                     jeu,
                     nom,
                     niveau_db: widgets_min(),
@@ -1169,6 +1322,7 @@ impl App {
         let h = paths::horodatage();
         self.enregistrement = Some(Enregistrement {
             source: Source::Simule,
+            pour_qwen: self.onglet_voix == paths::Moteur::Qwen,
             jeu: self.cfg.jeu_actif.clone(),
             nom: self.nom_echantillon(&h),
             niveau_db: -19.0,
@@ -1201,6 +1355,14 @@ impl App {
         let (jeu, nom) = (e.jeu, e.nom);
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
+        if e.pour_qwen {
+            thread::spawn(move || {
+                let r = enr.arreter().and_then(|brut| audio::lire(&brut)).and_then(|wav| qwen::ranger_enregistrement(&wav, &nom));
+                let _ = tx.send(Msg::EnregistrementQwen(r));
+                ctx.request_repaint();
+            });
+            return;
+        }
         thread::spawn(move || {
             let r = enr
                 .arreter()

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub const API: &str = "http://127.0.0.1:7851";
@@ -178,7 +179,13 @@ fn demander(
 /// appelle `progression` avant chaque morceau, puis concatène (audio::concatener, pause 0,25 s)
 /// et écrit `sortie` en PCM 16 bits. Erreurs lisibles : HTTP non-2xx avec corps,
 /// `status == "generate-failure"` avec `error`, fichier de sortie AllTalk introuvable.
-pub fn generer(req: &Requete, sortie: &Path, progression: &dyn Fn(Progression)) -> Result<PathBuf, String> {
+/// Erreur renvoyée par une génération interrompue à la demande de l'utilisateur.
+pub const INTERROMPUE: &str = "Génération interrompue.";
+
+/// Synthèse morceau par morceau. `arret` est consulté avant chaque morceau : AllTalk ne sait pas
+/// interrompre une génération non diffusée en continu (`/api/stop-generation` n'agit qu'en
+/// streaming), le morceau en cours va donc à son terme.
+pub fn generer(req: &Requete, sortie: &Path, progression: &dyn Fn(Progression), arret: &AtomicBool) -> Result<PathBuf, String> {
     let morceaux = crate::texte::decouper(&req.texte);
     if morceaux.is_empty() {
         return Err("Le texte est vide : il n'y a rien à lire.".into());
@@ -190,6 +197,9 @@ pub fn generer(req: &Requete, sortie: &Path, progression: &dyn Fn(Progression)) 
     let total = morceaux.len();
     let mut fichiers: Vec<PathBuf> = Vec::with_capacity(total);
     for (i, morceau) in morceaux.iter().enumerate() {
+        if arret.load(Ordering::Relaxed) {
+            return Err(INTERROMPUE.into());
+        }
         progression(Progression { morceau: i + 1, total });
         let nom = format!("vocalise_{heure}_{:03}", i + 1);
         // Carte de 4 Go : la VRAM manque parfois de quelques Mo (« CUDA out of memory »,
@@ -205,6 +215,7 @@ pub fn generer(req: &Requete, sortie: &Path, progression: &dyn Fn(Progression)) 
                         e
                     });
                 }
+                Err(_) if arret.load(Ordering::Relaxed) => return Err(INTERROMPUE.into()),
                 Err(_) => {
                     essai += 1;
                     std::thread::sleep(Duration::from_secs(2));
@@ -454,6 +465,16 @@ impl Serveur {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn interruption_avant_le_premier_morceau() {
+        // Arrêt déjà demandé : aucune requête n'est envoyée à AllTalk.
+        let req = Requete { texte: "Bonjour.".into(), voix: "x.wav".into(), langue: "fr".into(), vitesse: 1.0, temperature: 0.7 };
+        let sortie = std::env::temp_dir().join("vocalise_test_interruption.wav");
+        let r = generer(&req, &sortie, &|_| panic!("aucun morceau ne doit commencer"), &AtomicBool::new(true));
+        assert_eq!(r.unwrap_err(), INTERROMPUE);
+        assert!(!sortie.exists());
+    }
+
     use super::*;
 
     #[cfg(unix)]
@@ -573,7 +594,7 @@ mod tests {
             vitesse: 1.0,
             temperature: 0.7,
         };
-        let r = generer(&req, &sortie, &|p| eprintln!("morceau {}/{}", p.morceau, p.total)).unwrap();
+        let r = generer(&req, &sortie, &|p| eprintln!("morceau {}/{}", p.morceau, p.total), &AtomicBool::new(false)).unwrap();
         let w = crate::audio::lire(&r).unwrap();
         let _ = std::fs::remove_file(&r);
         assert!(w.duree() > 0.5);

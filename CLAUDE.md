@@ -26,9 +26,13 @@ dans son propre environnement Python `<données>/vocalise/qwen/env` (uv, `qwen-t
 incompatible avec l'environnement d'AllTalk, ne jamais l'y installer). `moteur_qwen.py` (à la
 racine, embarqué dans l'application par `include_str!`) est lancé pour une génération : ligne JSON
 « prêt », puis une demande JSON par ligne sur stdin, une réponse par ligne sur stdout (journaux sur
-stderr → `qwen.log`), fin à la fermeture de stdin. Référence de voix : `qwen/voix/<nom>.wav` + `.txt`
-(texte exact de l'extrait, choisi dans Ma voix : menu d'un échantillon, l'ancien va dans
-`qwen/voix/corbeille/`), sinon premier échantillon du jeu en mode timbre seul (moins fidèle).
+stderr → `qwen.log`), fin à la fermeture de stdin. Voix de Qwen : `qwen/voix/<nom>.wav` + `.txt`
+(texte exact de l'extrait ; remplacée ou retirée → `qwen/voix/corbeille/`), indépendante des jeux
+d'XTTS ; config `voix_qwen` (nom, ou `voiceset:jeu` = premier échantillon en timbre seul), `voix`
+restant celle d'XTTS. Les enregistrements faits depuis l'onglet Qwen de Ma voix vont dans
+`qwen/enregistrements/`, jamais dans un jeu. Interruption (`Generation.arret`) : Qwen tue son
+processus aussitôt ; XTTS s'arrête entre deux morceaux (`/api/stop-generation` d'AllTalk n'agit
+qu'en streaming, ne pas l'appeler).
 
 ## Windows
 
@@ -75,7 +79,7 @@ vocalise-gui --capture <dossier> [--theme clair|sombre] [--taille 860x560]
 ```
 
 Le mode `--capture` écrit un PNG par écran (synthese, ma-voix, reglages, confirmation,
-enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour, synthese-qwen, ma-voix-qwen, extrait-qwen) puis quitte. **C'est le seul moyen de voir l'interface depuis
+enregistrement, synthese-sans-alltalk, diagnostic, mises-a-jour, synthese-qwen, ma-voix-qwen, extrait-qwen, generation) puis quitte. **C'est le seul moyen de voir l'interface depuis
 une session Claude** (pas de capture d'écran du bureau) : l'utiliser après tout changement visuel.
 Il ne démarre rien, n'enregistre rien et ne sauvegarde pas la config. La fenêtre de capture s'ouvre
 via X11 (XWayland), au-dessus des autres : sous Wayland, une fenêtre recouverte n'est plus redessinée

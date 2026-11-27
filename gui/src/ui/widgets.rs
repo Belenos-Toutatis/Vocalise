@@ -383,6 +383,51 @@ pub fn element_menu(ui: &mut Ui, icone: &str, texte: &str, rouge: bool) -> Respo
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// Onglets en segments (fond creux, segment choisi en relief) ; renvoie l'onglet cliqué.
+/// Chaque onglet : (libellé, petite mention à droite du libellé, ex. « synthèse »).
+pub fn onglets(ui: &mut Ui, onglets: &[(&str, Option<&str>)], choisi: usize, largeur: f32) -> Option<usize> {
+    let p = pal(ui);
+    let h = 40.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(largeur, h), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(theme::RAYON_BOUTON + 2), p.creux);
+    let n = onglets.len().max(1) as f32;
+    let l = (rect.width() - 8.0) / n;
+    let mut clic = None;
+    for (i, (texte, mention)) in onglets.iter().enumerate() {
+        let r = Rect::from_min_size(rect.left_top() + vec2(4.0 + i as f32 * l, 4.0), vec2(l, h - 8.0));
+        let id = ui.id().with(("onglet", *texte));
+        let resp = ui.interact(r, id, Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, i == choisi, *texte));
+        let painter = ui.painter();
+        let actif = i == choisi;
+        if actif {
+            painter.add(Shadow { offset: [0, 1], blur: 4, spread: 0, color: p.ombre }.as_shape(r, CornerRadius::same(theme::RAYON_BOUTON)));
+            painter.rect_filled(r, CornerRadius::same(theme::RAYON_BOUTON), p.surface);
+        } else if resp.hovered() {
+            painter.rect_filled(r, CornerRadius::same(theme::RAYON_BOUTON), p.survol);
+        }
+        let police = if actif { theme::police_forte(14.5) } else { theme::police(14.5) };
+        let couleur = if actif { p.accent_texte } else { p.texte_2 };
+        let g = painter.layout_no_wrap(texte.to_string(), police, couleur);
+        let gm = mention.map(|m| painter.layout_no_wrap(m.to_string(), theme::police(12.0), if actif { p.succes } else { p.texte_3 }));
+        let total = g.size().x + gm.as_ref().map(|m| m.size().x + 8.0).unwrap_or(0.0);
+        let x0 = r.center().x - total / 2.0;
+        let gy = r.center().y - g.size().y / 2.0;
+        let gw = g.size().x;
+        painter.galley(pos2(x0, gy), g, couleur);
+        if let Some(m) = gm {
+            painter.galley(pos2(x0 + gw + 8.0, r.center().y - m.size().y / 2.0 + 1.0), m, p.texte_3);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(r, CornerRadius::same(theme::RAYON_BOUTON), Stroke::new(2.0, p.accent_texte), StrokeKind::Inside);
+        }
+        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            clic = Some(i);
+        }
+    }
+    clic
+}
+
 /// Bouton de navigation de la barre latérale.
 pub fn bouton_nav(ui: &mut Ui, icone: &str, texte: &str, choisi: bool) -> Response {
     let p = pal(ui);

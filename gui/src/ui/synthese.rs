@@ -20,6 +20,10 @@ pub fn afficher(app: &mut App, ui: &mut Ui) {
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)) && app.peut_generer() {
         app.generer();
     }
+    // Échap : interrompre la génération (sans dialogue ouvert, où Échap ferme le dialogue).
+    if app.generation.is_some() && app.dialogue.is_none() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.interrompre_generation();
+    }
 
     let large = ui.available_width() >= 780.0;
     if large {
@@ -218,13 +222,32 @@ fn ligne_generer(app: &mut App, ui: &mut Ui) {
                 "AllTalk doit être démarré pour générer."
             } else if app.texte.trim().is_empty() {
                 "Saisissez ou ouvrez d'abord un texte."
-            } else if app.cfg.voix.is_empty() {
+            } else if app.voix_du_moteur().is_empty() {
                 "Choisissez une voix."
             } else {
                 "Une génération est déjà en cours."
             };
-            let r = Bouton::principal(if occupe { "Génération…" } else { "Générer" })
-                .icone(if occupe { "" } else { "▶" })
+            if let Some(g) = &app.generation {
+                let possible = !g.interrompue() && !matches!(g.phase, Phase::Conversion(_));
+                let r = Bouton::secondaire(if g.interrompue() { "Arrêt…" } else { "Interrompre" })
+                    .icone(if g.interrompue() { "" } else { "■" })
+                    .grand()
+                    .largeur_min(LARGEUR_GENERER)
+                    .actif(possible)
+                    .infobulle(if app.cfg.moteur == Moteur::Qwen {
+                        "Arrêter la génération tout de suite (Échap)"
+                    } else {
+                        "Arrêter la génération après le morceau en cours (Échap)"
+                    })
+                    .raison(if g.interrompue() { "Arrêt en cours." } else { "La conversion finale ne peut pas être interrompue." })
+                    .ui(ui);
+                if r.clicked() {
+                    app.interrompre_generation();
+                }
+                return;
+            }
+            let r = Bouton::principal("Générer")
+                .icone("▶")
                 .grand()
                 .largeur_min(LARGEUR_GENERER)
                 .actif(app.peut_generer())
@@ -258,6 +281,8 @@ fn bandeau_generation(app: &mut App, ui: &mut Ui) {
     let p = pal(ui);
     let Some(g) = &app.generation else { return };
     let (texte, fraction) = match &g.phase {
+        _ if g.interrompue() && app.cfg.moteur == Moteur::Xtts => ("Interruption après le morceau en cours…".to_string(), None),
+        _ if g.interrompue() => ("Interruption…".to_string(), None),
         Phase::Preparation if app.cfg.moteur == Moteur::Qwen => ("Chargement de Qwen3-TTS…".to_string(), None),
         Phase::Preparation => ("Envoi du texte à AllTalk…".to_string(), None),
         Phase::Morceau(pr) => (
@@ -362,88 +387,161 @@ fn bandeau_resultat(app: &mut App, ui: &mut Ui) {
 // ------------------------------------------------------------------ voix et réglages
 
 fn carte_voix(app: &mut App, ui: &mut Ui) {
-    let p = pal(ui);
     let occupe = app.generation.is_some();
     widgets::carte(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         widgets::titre_carte(ui, "Voix");
         ui.add_space(2.0);
         let largeur = ui.available_width();
-        let avant = app.cfg.moteur;
-        ui.add_enabled_ui(!occupe, |ui| {
-            egui::ComboBox::from_id_salt("choix_moteur")
-                .width(largeur)
-                .selected_text(RichText::new(format!("Moteur : {}", app.cfg.moteur.nom())).size(15.0))
-                .show_ui(ui, |ui| {
-                    for m in Moteur::TOUS {
-                        ui.selectable_value(&mut app.cfg.moteur, m, format!("{}  —  {}", m.nom(), m.description()));
-                    }
-                })
-                .response
-                .on_hover_text(
-                    "XTTS : par AllTalk, sur la carte graphique, quelques secondes par phrase.\n\
-                     Qwen3-TTS : sans AllTalk, sur le processeur, plus fidèle à votre voix\n\
-                     mais environ quatre fois plus lent que la durée de l'audio.",
-                );
-        });
-        if app.cfg.moteur != avant {
-            app.moteur_change();
-        }
-        ui.add_space(2.0);
-        ui.add_enabled_ui(!occupe, |ui| {
-            egui::ComboBox::from_id_salt("choix_voix")
-                .width(largeur)
-                .height(380.0)
-                .selected_text(
-                    RichText::new(if app.cfg.voix.is_empty() { "Choisir une voix…".into() } else { super::libelle_voix(&app.cfg.voix) }).size(15.0),
-                )
-                .show_ui(ui, |ui| {
-                    if app.voix_liste.is_empty() {
-                        ui.label(RichText::new(if app.voix_chargees { "Aucune voix trouvée." } else { "Chargement…" }).color(p.texte_2));
-                    }
-                    let (jeux, fichiers): (Vec<&String>, Vec<&String>) =
-                        app.voix_liste.iter().partition(|v| crate::voicesets::jeu_depuis_api(v).is_some());
-                    if !jeux.is_empty() {
-                        ui.label(RichText::new("JEUX DE VOIX (LES PLUS FIDÈLES)").font(theme::police_forte(11.5)).color(p.texte_2));
-                        for v in jeux {
-                            ui.selectable_value(&mut app.cfg.voix, v.clone(), super::libelle_voix(v));
-                        }
-                    }
-                    if !fichiers.is_empty() {
-                        ui.add_space(4.0);
-                        ui.label(RichText::new("VOIX SIMPLES (UN SEUL FICHIER)").font(theme::police_forte(11.5)).color(p.texte_2));
-                        for v in fichiers {
-                            ui.selectable_value(&mut app.cfg.voix, v.clone(), super::libelle_voix(v));
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("Un jeu de voix combine plusieurs échantillons :\nc'est le choix le plus fidèle à votre voix.");
-        });
-        if app.voix_chargees && !app.cfg.voix.is_empty() && !app.voix_liste.contains(&app.cfg.voix) {
-            widgets::encadre(ui, Ton::Avert, "Cette voix n'est plus disponible : choisissez-en une autre.");
-        }
 
-        let reglable = !occupe && app.cfg.moteur == Moteur::Xtts;
-        ui.add_space(8.0);
-        ligne_reglage(ui, "Vitesse", &format!("{}×", widgets::decimal(app.cfg.vitesse, 2)));
-        ui.add_enabled_ui(reglable, |ui| {
-            widgets::curseur(ui, &mut app.cfg.vitesse, 0.7, 1.3, 0.05, largeur)
-                .on_hover_text("Glissez, ou utilisez les flèches du clavier.");
+        // Moteur : deux onglets, puis seulement ce qui le concerne.
+        ui.add_enabled_ui(!occupe, |ui| {
+            let choisi = if app.cfg.moteur == Moteur::Qwen { 1 } else { 0 };
+            if let Some(i) = widgets::onglets(ui, &[("XTTS", None), ("Qwen3-TTS", None)], choisi, largeur) {
+                let m = if i == 1 { Moteur::Qwen } else { Moteur::Xtts };
+                if m != app.cfg.moteur && !occupe {
+                    app.cfg.moteur = m;
+                    app.moteur_change();
+                }
+            }
         });
-        widgets::secondaire(ui, "1 = débit naturel ; moins = plus posé.");
-
-        ui.add_space(8.0);
-        ligne_reglage(ui, "Température", &widgets::decimal(app.cfg.temperature, 2));
-        ui.add_enabled_ui(reglable, |ui| {
-            widgets::curseur(ui, &mut app.cfg.temperature, 0.3, 1.0, 0.05, largeur)
-                .on_hover_text("Glissez, ou utilisez les flèches du clavier.");
-        });
-        widgets::secondaire(ui, "Basse : diction régulière. Haute : plus vivante, moins prévisible.");
-        if app.cfg.moteur == Moteur::Qwen {
-            widgets::secondaire(ui, "Avec Qwen3-TTS, vitesse et température n'ont pas d'effet : il règle seul son débit.");
+        widgets::secondaire(
+            ui,
+            match app.cfg.moteur {
+                Moteur::Xtts => "Par AllTalk, sur la carte graphique : quelques secondes par phrase.",
+                Moteur::Qwen => "Sans AllTalk, sur le processeur : plus fidèle, environ quatre fois la durée de l'audio.",
+            },
+        );
+        ui.add_space(4.0);
+        match app.cfg.moteur {
+            Moteur::Xtts => voix_xtts(app, ui, largeur, occupe),
+            Moteur::Qwen => voix_qwen(app, ui, largeur, occupe),
         }
     });
+}
+
+fn lien_ma_voix(app: &mut App, ui: &mut Ui, texte: &str, moteur: Moteur) {
+    ui.add_space(2.0);
+    if Bouton::discret(texte).petit().infobulle("Ouvrir l'écran Ma voix").ui(ui).clicked() {
+        app.onglet_voix = moteur;
+        app.ecran = crate::app::Ecran::Voix;
+    }
+}
+
+fn voix_xtts(app: &mut App, ui: &mut Ui, largeur: f32, occupe: bool) {
+    let p = pal(ui);
+    ui.add_enabled_ui(!occupe, |ui| {
+        egui::ComboBox::from_id_salt("choix_voix")
+            .width(largeur)
+            .height(380.0)
+            .selected_text(
+                RichText::new(if app.cfg.voix.is_empty() { "Choisir une voix…".into() } else { super::libelle_voix(&app.cfg.voix) }).size(15.0),
+            )
+            .show_ui(ui, |ui| {
+                if app.voix_liste.is_empty() {
+                    ui.label(RichText::new(if app.voix_chargees { "Aucune voix trouvée." } else { "Chargement…" }).color(p.texte_2));
+                }
+                let (jeux, fichiers): (Vec<&String>, Vec<&String>) =
+                    app.voix_liste.iter().partition(|v| crate::voicesets::jeu_depuis_api(v).is_some());
+                if !jeux.is_empty() {
+                    ui.label(RichText::new("JEUX DE VOIX (LES PLUS FIDÈLES)").font(theme::police_forte(11.5)).color(p.texte_2));
+                    for v in jeux {
+                        ui.selectable_value(&mut app.cfg.voix, v.clone(), super::libelle_voix(v));
+                    }
+                }
+                if !fichiers.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("VOIX SIMPLES (UN SEUL FICHIER)").font(theme::police_forte(11.5)).color(p.texte_2));
+                    for v in fichiers {
+                        ui.selectable_value(&mut app.cfg.voix, v.clone(), super::libelle_voix(v));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Un jeu de voix combine plusieurs échantillons :\nc'est le choix le plus fidèle à votre voix.");
+    });
+    if app.voix_chargees && !app.cfg.voix.is_empty() && !app.voix_liste.contains(&app.cfg.voix) {
+        widgets::encadre(ui, Ton::Avert, "Cette voix n'est plus disponible : choisissez-en une autre.");
+    }
+
+    ui.add_space(8.0);
+    ligne_reglage(ui, "Vitesse", &format!("{}×", widgets::decimal(app.cfg.vitesse, 2)));
+    ui.add_enabled_ui(!occupe, |ui| {
+        widgets::curseur(ui, &mut app.cfg.vitesse, 0.7, 1.3, 0.05, largeur).on_hover_text("Glissez, ou utilisez les flèches du clavier.");
+    });
+    widgets::secondaire(ui, "1 = débit naturel ; moins = plus posé.");
+
+    ui.add_space(8.0);
+    ligne_reglage(ui, "Température", &widgets::decimal(app.cfg.temperature, 2));
+    ui.add_enabled_ui(!occupe, |ui| {
+        widgets::curseur(ui, &mut app.cfg.temperature, 0.3, 1.0, 0.05, largeur).on_hover_text("Glissez, ou utilisez les flèches du clavier.");
+    });
+    widgets::secondaire(ui, "Basse : diction régulière. Haute : plus vivante, moins prévisible.");
+    lien_ma_voix(app, ui, "Gérer les jeux de voix XTTS ›", Moteur::Xtts);
+}
+
+fn libelle_voix_qwen(v: &str) -> String {
+    match crate::voicesets::jeu_depuis_api(v) {
+        Some(j) => format!("Jeu XTTS « {j} » (timbre seul)"),
+        None => v.to_string(),
+    }
+}
+
+fn voix_qwen(app: &mut App, ui: &mut Ui, largeur: f32, occupe: bool) {
+    let p = pal(ui);
+    let choix = app.choix_voix_qwen();
+    let avant = app.cfg.voix_qwen.clone();
+    ui.add_enabled_ui(!occupe, |ui| {
+        egui::ComboBox::from_id_salt("choix_voix_qwen")
+            .width(largeur)
+            .height(380.0)
+            .selected_text(
+                RichText::new(if app.cfg.voix_qwen.is_empty() { "Choisir une voix…".into() } else { libelle_voix_qwen(&app.cfg.voix_qwen) })
+                    .size(15.0),
+            )
+            .show_ui(ui, |ui| {
+                ui.set_min_width(280.0);
+                let (preparees, jeux): (Vec<_>, Vec<_>) = choix.iter().partition(|(v, _)| crate::voicesets::jeu_depuis_api(v).is_none());
+                if !preparees.is_empty() {
+                    ui.label(RichText::new("VOIX PRÉPARÉES (LES PLUS FIDÈLES)").font(theme::police_forte(11.5)).color(p.texte_2));
+                    for (v, l) in preparees {
+                        ui.selectable_value(&mut app.cfg.voix_qwen, v.clone(), l);
+                    }
+                }
+                if !jeux.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("JEUX XTTS (TIMBRE SEUL, MOINS FIDÈLE)").font(theme::police_forte(11.5)).color(p.texte_2));
+                    for (v, l) in jeux {
+                        ui.selectable_value(&mut app.cfg.voix_qwen, v.clone(), l);
+                    }
+                }
+                if choix.is_empty() {
+                    ui.label(RichText::new("Aucune voix : préparez-en une dans Ma voix.").color(p.texte_2));
+                }
+            })
+            .response
+            .on_hover_text("Une voix préparée = un extrait court et son texte exact :\nc'est le choix le plus fidèle avec Qwen3-TTS.");
+    });
+    if app.cfg.voix_qwen != avant {
+        app.sauver();
+    }
+    let v = app.cfg.voix_qwen.clone();
+    match app.voix_qwen.iter().find(|r| r.nom == v) {
+        Some(r) if !r.texte.is_empty() => {
+            widgets::secondaire(ui, format!("Extrait de {} et son texte.", widgets::duree_lisible(r.duree)));
+        }
+        Some(_) => widgets::encadre(ui, Ton::Avert, "Extrait sans texte : seul le timbre est copié. Ajoutez le texte dans Ma voix."),
+        None if crate::voicesets::jeu_depuis_api(&v).is_some() => widgets::encadre(
+            ui,
+            Ton::Avert,
+            "Timbre seul : préparez un extrait avec son texte (Ma voix › Qwen3-TTS) pour une voix plus fidèle.",
+        ),
+        None if v.is_empty() => {}
+        None => widgets::encadre(ui, Ton::Avert, "Cette voix n'existe plus : choisissez-en une autre."),
+    }
+    ui.add_space(8.0);
+    widgets::secondaire(ui, "Pas de réglage de vitesse ni de température : Qwen3-TTS règle seul le débit et l'intonation, d'après l'extrait.");
+    lien_ma_voix(app, ui, "Gérer les voix Qwen3-TTS ›", Moteur::Qwen);
 }
 
 fn ligne_reglage(ui: &mut Ui, nom: &str, valeur: &str) {

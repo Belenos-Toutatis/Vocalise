@@ -1,8 +1,10 @@
-//! Écran « Ma voix » : jeu de voix actif, échantillons, studio d'enregistrement.
+//! Écran « Ma voix » : studio d'enregistrement et, par onglet, les fichiers de chaque moteur
+//! (jeu de voix d'XTTS, voix préparées de Qwen3-TTS).
 
 use super::theme::{self, pal};
 use super::widgets::{self, Bouton, Ton};
 use crate::app::{App, Dialogue};
+use crate::paths::Moteur;
 use crate::voicesets::{DUREE_MAX_S, MAX_UTILES};
 use eframe::egui::{self, vec2, Align, CornerRadius, Frame, Layout, Margin, PopupCloseBehavior, RichText, ScrollArea, Stroke, Ui};
 use std::path::PathBuf;
@@ -10,13 +12,41 @@ use std::path::PathBuf;
 const LARGEUR_LISTE: f32 = 320.0;
 
 pub fn afficher(app: &mut App, ui: &mut Ui) {
-    let qwen = app.cfg.moteur == crate::paths::Moteur::Qwen;
-    let sous_titre = if qwen {
-        "Enregistrez des échantillons de votre voix, puis choisissez l'extrait dont Qwen3-TTS se sert pour l'imiter."
-    } else {
-        "Enregistrez des échantillons de votre voix : AllTalk s'en sert pour l'imiter."
-    };
-    widgets::titre_page(ui, "Ma voix", sous_titre);
+    let qwen = app.onglet_voix == Moteur::Qwen;
+    widgets::titre_page(
+        ui,
+        "Ma voix",
+        "Enregistrez votre voix et préparez-la pour chaque moteur : chacun a ses propres fichiers.",
+    );
+    // Un onglet par moteur ; celui de la synthèse est signalé.
+    let mention = |m: Moteur| if app.cfg.moteur == m { Some("● synthèse") } else { None };
+    let choix = widgets::onglets(
+        ui,
+        &[("XTTS (AllTalk)", mention(Moteur::Xtts)), ("Qwen3-TTS", mention(Moteur::Qwen))],
+        if qwen { 1 } else { 0 },
+        ui.available_width(),
+    );
+    if let Some(i) = choix {
+        if app.enregistrement.is_none() && !app.traitement {
+            app.onglet_voix = if i == 1 { Moteur::Qwen } else { Moteur::Xtts };
+            if let Some((t, _)) = app.modeles.get(app.modele_idx) {
+                app.etiquette_echantillon = crate::app::etiquette_modele(t);
+            }
+        } else {
+            app.info("Terminez d'abord l'enregistrement en cours.");
+        }
+    }
+    let qwen = app.onglet_voix == Moteur::Qwen;
+    widgets::secondaire(
+        ui,
+        if qwen {
+            "Qwen3-TTS imite une voix à partir d'un seul extrait de 8 à 12 s et du texte exact qui y est dit. Ses enregistrements restent à part : les jeux d'XTTS ne changent pas."
+        } else {
+            "XTTS combine jusqu'à 5 échantillons de 30 s d'un jeu de voix. Les enregistrements s'ajoutent au jeu choisi."
+        },
+    );
+    ui.add_space(4.0);
+
     let large = ui.available_width() >= 800.0;
     if large {
         let h = ui.available_height();
@@ -31,11 +61,7 @@ pub fn afficher(app: &mut App, ui: &mut Ui) {
             ui.allocate_ui_with_layout(vec2(LARGEUR_LISTE, h), Layout::top_down(Align::LEFT), |ui| {
                 widgets::defiler(ui, ScrollArea::vertical().id_salt("voix_droite").auto_shrink([false, false]), false, |ui| {
                     ui.spacing_mut().item_spacing.y = theme::ECART;
-                    if qwen {
-                        carte_qwen(app, ui);
-                    }
-                    carte_jeu(app, ui);
-                    carte_conseils(ui);
+                    colonne(app, ui, qwen);
                     ui.add_space(4.0);
                 });
             });
@@ -46,92 +72,171 @@ pub fn afficher(app: &mut App, ui: &mut Ui) {
         widgets::defiler(ui, ScrollArea::vertical().id_salt("voix_page").auto_shrink([false, false]), false, |ui| {
             ui.spacing_mut().item_spacing.y = theme::ECART;
             carte_studio(app, ui, Some(h));
-            if qwen {
-                carte_qwen(app, ui);
-            }
-            carte_jeu(app, ui);
-            carte_conseils(ui);
+            colonne(app, ui, qwen);
         });
     }
 }
 
-fn carte_conseils(ui: &mut Ui) {
+/// Cartes propres au moteur de l'onglet.
+fn colonne(app: &mut App, ui: &mut Ui, qwen: bool) {
+    if qwen {
+        carte_voix_qwen(app, ui);
+        carte_conseils(ui, &CONSEILS_QWEN);
+    } else {
+        carte_jeu(app, ui);
+        carte_conseils(ui, &CONSEILS_XTTS);
+    }
+}
+
+const CONSEILS_XTTS: [&str; 5] = [
+    "Pièce calme, porte fermée, sans écho.",
+    "Micro à 15–20 cm, toujours à la même distance.",
+    "Voix naturelle et posée, comme en classe.",
+    "20 à 30 s par échantillon : au-delà, la fin est ignorée.",
+    "Variez les textes : explication, récit, questions.",
+];
+
+const CONSEILS_QWEN: [&str; 5] = [
+    "Pièce calme, porte fermée, sans écho.",
+    "Un seul extrait de 8 à 12 s suffit : plus long, chaque génération ralentit.",
+    "Le ton de l'extrait se retrouve dans toute la narration : lisez comme vous voulez être entendu.",
+    "Le texte doit être exact, mot pour mot, jusqu'au dernier mot entendu.",
+    "Plusieurs voix possibles (classe, récit…) : choisissez-la dans la synthèse.",
+];
+
+fn carte_conseils(ui: &mut Ui, conseils: &[&str]) {
     let p = pal(ui);
     widgets::carte(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         widgets::titre_carte(ui, "Conseils");
-        for c in [
-            "Pièce calme, porte fermée, sans écho.",
-            "Micro à 15–20 cm, toujours à la même distance.",
-            "Voix naturelle et posée, comme en classe.",
-            "20 à 30 s par échantillon : au-delà, la fin est ignorée.",
-            "Variez les textes : explication, récit, questions.",
-        ] {
+        for c in conseils {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.label(RichText::new("•").size(14.0).color(p.accent_texte));
-                ui.add(egui::Label::new(RichText::new(c).size(13.5).color(p.texte_2)).wrap());
+                ui.add(egui::Label::new(RichText::new(*c).size(13.5).color(p.texte_2)).wrap());
             });
         }
     });
 }
 
-// ------------------------------------------------------------------ extrait pour Qwen3-TTS
+// ------------------------------------------------------------------ voix de Qwen3-TTS
 
-fn carte_qwen(app: &mut App, ui: &mut Ui) {
+enum ActionQwen {
+    Nouvelle,
+    Ecouter(PathBuf),
+    Choisir(String),
+    Modifier(String),
+    VersJeu(String),
+    Retirer(String),
+}
+
+fn carte_voix_qwen(app: &mut App, ui: &mut Ui) {
     let p = pal(ui);
-    let mut ecouter = None;
-    let mut retirer = false;
+    let mut action = None;
     let verrou = app.enregistrement.is_some() || app.traitement;
     widgets::carte(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
-        widgets::titre_carte(ui, "Extrait pour Qwen3-TTS");
-        match app.reference_qwen.clone() {
-            Some(r) => {
-                Frame::new().fill(p.creux).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            widgets::titre_carte(ui, "Voix Qwen3-TTS");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Bouton::secondaire("Nouvelle voix…")
+                    .petit()
+                    .actif(!verrou)
+                    .infobulle("Depuis un enregistrement, un échantillon d'un jeu XTTS ou un fichier wav")
+                    .ui(ui)
+                    .clicked()
+                {
+                    action = Some(ActionQwen::Nouvelle);
+                }
+            });
+        });
+        if app.voix_qwen.is_empty() {
+            widgets::encadre(
+                ui,
+                Ton::Avert,
+                "Aucune voix préparée : Qwen3-TTS ne copie alors que le timbre du premier échantillon d'un jeu XTTS, et la ressemblance baisse.",
+            );
+            widgets::secondaire(ui, "Enregistrez un extrait avec le bouton rouge, ou créez une voix depuis un échantillon existant.");
+            return;
+        }
+        let jeu = app.cfg.jeu_actif.clone();
+        ui.spacing_mut().item_spacing.y = 6.0;
+        for (i, r) in app.voix_qwen.clone().iter().enumerate() {
+            let choisie = app.cfg.voix_qwen == r.nom;
+            Frame::new()
+                .fill(if choisie { p.accent_doux } else { p.creux })
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::symmetric(8, 6))
+                .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 4.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         if widgets::bouton_lecture(ui, app.en_lecture(&r.wav), app.enregistrement.is_none()).clicked() {
-                            ecouter = Some(r.wav.clone());
+                            action = Some(ActionQwen::Ecouter(r.wav.clone()));
                         }
-                        ui.vertical(|ui| {
+                        let reste = ui.available_width() - 42.0;
+                        ui.allocate_ui_with_layout(vec2(reste, 36.0), Layout::top_down(Align::LEFT), |ui| {
+                            ui.set_min_width(reste);
                             ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(RichText::new(format!("Extrait de {}", widgets::duree_lisible(r.duree))).size(14.0).color(p.texte));
-                            ui.label(RichText::new("avec son texte").size(12.5).color(p.succes));
+                            ui.add(egui::Label::new(RichText::new(&r.nom).font(theme::police_forte(14.5)).color(p.texte)).truncate());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                ui.label(RichText::new(widgets::duree_lisible(r.duree)).size(12.5).color(p.texte_2));
+                                if r.texte.is_empty() {
+                                    ui.label(RichText::new("· sans texte").size(12.5).color(p.avert));
+                                }
+                                if choisie {
+                                    ui.label(RichText::new("· choisie pour la synthèse").size(12.5).color(p.succes));
+                                }
+                            });
+                        });
+                        let id_menu = ui.make_persistent_id(("menu_qwen", i));
+                        let m = widgets::bouton_menu(ui, "Actions sur cette voix");
+                        if m.clicked() && !verrou {
+                            ui.memory_mut(|mem| mem.toggle_popup(id_menu));
+                        }
+                        egui::popup_below_widget(ui, id_menu, &m, PopupCloseBehavior::CloseOnClick, |ui| {
+                            ui.set_min_width(290.0);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            if !choisie && widgets::element_menu(ui, "✓", "Choisir pour la synthèse", false).clicked() {
+                                action = Some(ActionQwen::Choisir(r.nom.clone()));
+                            }
+                            if widgets::element_menu(ui, "✎", "Modifier (durée, texte)…", false).clicked() {
+                                action = Some(ActionQwen::Modifier(r.nom.clone()));
+                            }
+                            if !jeu.is_empty() && widgets::element_menu(ui, "⇄", &format!("Copier dans le jeu XTTS « {jeu} »"), false).clicked() {
+                                action = Some(ActionQwen::VersJeu(r.nom.clone()));
+                            }
+                            ui.separator();
+                            if widgets::element_menu(ui, "✕", "Retirer (vers la corbeille)", false).clicked() {
+                                action = Some(ActionQwen::Retirer(r.nom.clone()));
+                            }
                         });
                     });
+                    if !r.texte.is_empty() {
+                        let apercu = if r.texte.chars().count() > 110 {
+                            format!("« {}… »", r.texte.chars().take(110).collect::<String>())
+                        } else {
+                            format!("« {} »", r.texte)
+                        };
+                        ui.add(egui::Label::new(RichText::new(apercu).size(12.5).italics().color(p.texte_2)).wrap()).on_hover_text(&r.texte);
+                    }
                 });
-                let apercu = if r.texte.chars().count() > 140 {
-                    format!("« {}… »", r.texte.chars().take(140).collect::<String>())
-                } else {
-                    format!("« {} »", r.texte)
-                };
-                ui.add(egui::Label::new(RichText::new(apercu).size(13.0).italics().color(p.texte_2)).wrap())
-                    .on_hover_text(&r.texte);
-                widgets::secondaire(ui, "Pour en changer : menu ⋯ d'un échantillon › Utiliser comme extrait.");
-                if Bouton::discret("Retirer l'extrait").petit().actif(!verrou).infobulle("Déplacé dans la corbeille de Qwen3-TTS, jamais effacé").ui(ui).clicked() {
-                    retirer = true;
-                }
-            }
-            None => {
-                widgets::encadre(
-                    ui,
-                    Ton::Avert,
-                    "Aucun extrait choisi : Qwen3-TTS ne copie que le timbre du premier échantillon, la voix est moins fidèle.",
-                );
-                widgets::secondaire(
-                    ui,
-                    "Choisissez un échantillon net (menu ⋯ › Utiliser comme extrait), puis recopiez le texte prononcé. Un seul extrait de 8 à 12 s suffit : Qwen n'utilise pas les autres.",
-                );
-            }
         }
     });
-    if let Some(w) = ecouter {
-        app.basculer_lecture(&w);
-    }
-    if retirer {
-        app.retirer_reference_qwen();
+    match action {
+        Some(ActionQwen::Nouvelle) => app.nouvelle_voix_qwen(None),
+        Some(ActionQwen::Ecouter(w)) => app.basculer_lecture(&w),
+        Some(ActionQwen::Choisir(n)) => {
+            app.cfg.voix_qwen = n.clone();
+            app.sauver();
+            app.info(format!("Voix « {n} » choisie pour Qwen3-TTS."));
+        }
+        Some(ActionQwen::Modifier(n)) => app.modifier_voix_qwen(&n),
+        Some(ActionQwen::VersJeu(n)) => app.copier_voix_qwen_vers_jeu(&n),
+        Some(ActionQwen::Retirer(n)) => app.retirer_voix_qwen(&n),
+        None => {}
     }
 }
 
@@ -146,7 +251,7 @@ enum Action {
     Ecouter(PathBuf),
     Exporter(PathBuf, String),
     Retirer(PathBuf),
-    ReferenceQwen(PathBuf, String),
+    ReferenceQwen(PathBuf),
 }
 
 fn carte_jeu(app: &mut App, ui: &mut Ui) {
@@ -282,10 +387,8 @@ fn carte_jeu(app: &mut App, ui: &mut Ui) {
                     egui::popup_below_widget(ui, id_menu, &r, PopupCloseBehavior::CloseOnClick, |ui| {
                         ui.set_min_width(280.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        if app.cfg.moteur == crate::paths::Moteur::Qwen
-                            && widgets::element_menu(ui, "Q", "Utiliser comme extrait pour Qwen3-TTS…", false).clicked()
-                        {
-                            action = Some(Action::ReferenceQwen(e.chemin.clone(), e.nom.clone()));
+                        if widgets::element_menu(ui, "Q", "Créer une voix Qwen3-TTS avec…", false).clicked() {
+                            action = Some(Action::ReferenceQwen(e.chemin.clone()));
                         }
                         if widgets::element_menu(ui, "⇪", "Exporter en voix simple…", false).clicked() {
                             action = Some(Action::Exporter(e.chemin.clone(), e.nom.clone()));
@@ -319,7 +422,7 @@ fn carte_jeu(app: &mut App, ui: &mut Ui) {
             app.dialogue = Some(Dialogue::Exporter { chemin: c, nom, erreur: None });
         }
         Some(Action::Retirer(c)) => app.retirer_echantillon(&c),
-        Some(Action::ReferenceQwen(c, nom)) => app.ouvrir_reference_qwen(&c, &nom),
+        Some(Action::ReferenceQwen(c)) => app.nouvelle_voix_qwen(Some(&c)),
         _ => {}
     }
 }
@@ -337,7 +440,7 @@ fn carte_studio(app: &mut App, ui: &mut Ui, hauteur: Option<f32>) {
         ui.spacing_mut().item_spacing.y = 10.0;
         ui.horizontal(|ui| {
             ui.set_min_height(theme::HAUTEUR_PETIT);
-            widgets::titre_carte(ui, "Enregistrer un échantillon");
+            widgets::titre_carte(ui, if app.onglet_voix == Moteur::Qwen { "Enregistrer un extrait" } else { "Enregistrer un échantillon" });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let titre = app.modeles.get(app.modele_idx).map(|m| m.0.clone()).unwrap_or_default();
                 let mut choix = app.modele_idx;
@@ -473,7 +576,16 @@ fn commandes(app: &mut App, ui: &mut Ui) {
             if let Some(e) = &app.enregistrement {
                 let d = e.duree();
                 let (db, pic) = (e.niveau_db, e.pic_db);
-                let trop_long = d > DUREE_MAX_S;
+                let pour_qwen = e.pour_qwen;
+                // Qwen : seul le début sert (extrait de 8 à 12 s), rien n'est coupé à 30 s.
+                let trop_long = !pour_qwen && d > DUREE_MAX_S;
+                let conseil = if pour_qwen {
+                    if d > 20.0 { "assez : seul le début servira" } else { "idéal : 10 à 15 s" }
+                } else if trop_long {
+                    "au-delà de 30 s, la fin sera coupée"
+                } else {
+                    "idéal : 20 à 30 s"
+                };
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 10.0;
                     ui.set_min_height(34.0);
@@ -484,7 +596,7 @@ fn commandes(app: &mut App, ui: &mut Ui) {
                         ui.allocate_ui_with_layout(vec2(reste, 30.0), Layout::left_to_right(Align::Center), |ui| {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(if trop_long { "au-delà de 30 s, la fin sera coupée" } else { "idéal : 20 à 30 s" })
+                                    RichText::new(conseil)
                                         .size(13.0)
                                         .color(if trop_long { p.avert } else { p.texte_2 }),
                                 )
@@ -492,7 +604,7 @@ fn commandes(app: &mut App, ui: &mut Ui) {
                             );
                         });
                     }
-                    if Bouton::discret("Annuler").petit().infobulle("Arrêter sans ajouter l'échantillon au jeu").ui(ui).clicked() {
+                    if Bouton::discret("Annuler").petit().infobulle("Arrêter sans garder l'enregistrement").ui(ui).clicked() {
                         app.arreter_enregistrement(false);
                     }
                 });
@@ -512,7 +624,10 @@ fn commandes(app: &mut App, ui: &mut Ui) {
                     widgets::sablier(ui, 18.0, p.accent_texte);
                     ui.label(RichText::new("Nettoyage de l'échantillon…").font(theme::police_forte(16.0)).color(p.texte));
                 });
-                widgets::secondaire(ui, "Silences coupés, volume ajusté, durée limitée à 30 s.");
+                widgets::secondaire(
+                    ui,
+                    if app.onglet_voix == Moteur::Qwen { "Silences coupés, volume ajusté." } else { "Silences coupés, volume ajusté, durée limitée à 30 s." },
+                );
             } else {
                 ui.add_space(8.0);
                 ui.label(RichText::new("Prêt à enregistrer").font(theme::police_forte(17.0)).color(p.texte));
@@ -521,10 +636,18 @@ fn commandes(app: &mut App, ui: &mut Ui) {
                         .wrap(),
                 );
                 let nom = app.nom_echantillon(&crate::paths::horodatage());
-                ui.add(
-                    egui::Label::new(RichText::new(format!("Jeu « {} » · {nom}", app.cfg.jeu_actif)).size(13.0).color(p.texte_2)).truncate(),
-                )
-                .on_hover_text("Le nouvel échantillon sera ajouté à ce jeu, sous ce nom.");
+                if app.onglet_voix == Moteur::Qwen {
+                    ui.add(
+                        egui::Label::new(RichText::new(format!("Ensuite : extrait et texte, pour une voix Qwen3-TTS · {nom}")).size(13.0).color(p.texte_2))
+                            .truncate(),
+                    )
+                    .on_hover_text("L'enregistrement est gardé à part (hors des jeux XTTS), puis vous choisissez\nla durée de l'extrait et recopiez le texte prononcé.");
+                } else {
+                    ui.add(
+                        egui::Label::new(RichText::new(format!("Jeu « {} » · {nom}", app.cfg.jeu_actif)).size(13.0).color(p.texte_2)).truncate(),
+                    )
+                    .on_hover_text("Le nouvel échantillon sera ajouté à ce jeu, sous ce nom.");
+                }
             }
         });
     });

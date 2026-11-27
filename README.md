@@ -151,14 +151,23 @@ uv pip install --python ~/.local/share/vocalise/qwen/env qwen-tts --torch-backen
 télécharge à la première génération. Choix du moteur : carte **Voix** de l'écran Synthèse, ou
 `vocalise --moteur qwen`. Vitesse et température n'ont pas d'effet avec Qwen3-TTS.
 
-Qwen3-TTS imite la voix à partir d'**un seul** extrait de quelques secondes **et du texte prononcé
-dedans** : les autres échantillons du jeu ne lui servent pas, en ajouter n'améliore rien. Pour le
-choisir : moteur Qwen3-TTS sélectionné, écran **Ma voix**, menu ⋯ d'un échantillon net › *Utiliser
-comme extrait pour Qwen3-TTS…* ; régler la durée (8 à 12 s suffisent), écouter, recopier le texte
-mot pour mot (proposé d'après le texte modèle). L'extrait est rangé dans
-`~/.local/share/vocalise/qwen/voix/<jeu>.wav` et `<jeu>.txt` (un extrait remplacé part dans
-`voix/corbeille/`). Sans extrait, Qwen prend le premier échantillon du jeu, sans texte : seul le
-timbre est alors copié et la ressemblance est moindre.
+Qwen3-TTS imite une voix à partir d'**un seul** extrait de quelques secondes **et du texte
+prononcé dedans** : en ajouter n'améliore rien. Ses voix se gèrent dans **Ma voix**, onglet
+**Qwen3-TTS**, à part des jeux de voix d'XTTS :
+
+- bouton rouge : l'enregistrement est nettoyé et rangé dans
+  `~/.local/share/vocalise/qwen/enregistrements/` (hors des jeux XTTS), puis on choisit la durée de
+  l'extrait (8 à 12 s suffisent), on l'écoute et on recopie le texte mot pour mot (proposé d'après
+  le texte modèle) ;
+- *Nouvelle voix…* : même chose depuis un enregistrement précédent, un échantillon d'un jeu XTTS
+  ou un fichier wav ; dans l'onglet XTTS, menu ⋯ d'un échantillon › *Créer une voix Qwen3-TTS
+  avec…* ;
+- menu ⋯ d'une voix : la choisir pour la synthèse, la modifier (durée, texte), la copier dans le
+  jeu XTTS actif, la retirer (vers `voix/corbeille/`, jamais effacée).
+
+Chaque voix est rangée dans `~/.local/share/vocalise/qwen/voix/<nom>.wav` et `<nom>.txt`. Dans la
+synthèse, Qwen3-TTS propose ses voix préparées puis les jeux XTTS (premier échantillon, sans
+texte : seul le timbre est copié, la ressemblance est moindre).
 
 ### 6. Votre première voix
 
@@ -212,12 +221,16 @@ dans `%USERPROFILE%\.claude\CLAUDE.md`.
 
 ### Application
 
-- **Synthèse** : texte (saisie ou *Ouvrir un texte…* .txt/.md), voix, vitesse, température, nom et
-  format du fichier (WAV, FLAC sans perte, MP3, OGG Opus), bouton Générer avec progression, écoute,
+- **Synthèse** : texte (saisie ou *Ouvrir un texte…* .txt/.md), moteur (XTTS ou Qwen3-TTS) et ses
+  seuls réglages (XTTS : voix, vitesse, température ; Qwen3-TTS : voix préparée), nom et format du
+  fichier (WAV, FLAC sans perte, MP3, OGG Opus), bouton Générer avec progression, **Interrompre**
+  (ou Échap : tout de suite avec Qwen3-TTS, après le morceau en cours avec XTTS), écoute,
   historique de la session. Fichiers dans `sorties/`.
-- **Ma voix** : jeux de voix (créer, choisir, réinitialiser, supprimer, ouvrir le dossier), jauge
-  « N / 5 échantillons exploités », liste des échantillons (écouter, retirer, exporter en voix simple),
-  enregistrement guidé avec chrono et vumètre.
+- **Ma voix** : un onglet par moteur, chacun avec ses fichiers. XTTS : jeux de voix (créer,
+  choisir, réinitialiser, supprimer, ouvrir le dossier), jauge « N / 5 échantillons exploités »,
+  liste des échantillons (écouter, retirer, exporter en voix simple, créer une voix Qwen3-TTS).
+  Qwen3-TTS : voix préparées (extrait et texte). Enregistrement guidé avec chrono et vumètre, vers
+  le moteur de l'onglet.
 - **Réglages** : diagnostic des composants, serveur AllTalk (démarrer, arrêter, interface web,
   journal), dossiers, langue, format par défaut, mises à jour. Configuration dans
   `~/.config/vocalise/config.json`.

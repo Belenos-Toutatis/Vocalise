@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Captures produites, dans l'ordre.
-const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour", "synthese-qwen", "ma-voix-qwen", "extrait-qwen"];
+const ETAPES: &[&str] = &["synthese", "ma-voix", "reglages", "confirmation", "enregistrement", "synthese-sans-alltalk", "diagnostic", "mises-a-jour", "synthese-qwen", "ma-voix-qwen", "extrait-qwen", "generation"];
 
 pub struct Capture {
     dossier: PathBuf,
@@ -92,6 +92,7 @@ impl Capture {
                 self.etape += 1;
                 if self.etape >= ETAPES.len() {
                     app.dialogue = None;
+                    app.generation = None;
                     app.enregistrement = None;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -112,7 +113,9 @@ fn preparer(app: &mut App, etape: usize) {
     app.lecture = None;
     match ETAPES[etape] {
         "synthese" => {
+            // Captures d'XTTS d'abord, quel que soit le moteur de la configuration réelle.
             app.ecran = Ecran::Synthese;
+            app.cfg.moteur = crate::paths::Moteur::Xtts;
             if app.texte.is_empty() {
                 if let Some((titre, corps)) = app.modeles.first().cloned() {
                     app.texte = corps.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n").trim().to_string();
@@ -133,7 +136,10 @@ fn preparer(app: &mut App, etape: usize) {
             // Lecture simulée du 2e fichier : son bouton montre ■ au lieu de ▶.
             app.lecture = Some(app.historique[1].chemin.clone());
         }
-        "ma-voix" => app.ecran = Ecran::Voix,
+        "ma-voix" => {
+            app.ecran = Ecran::Voix;
+            app.onglet_voix = crate::paths::Moteur::Xtts;
+        }
         "reglages" => {
             app.ecran = Ecran::Reglages;
             // Une version plus récente simulée, pour montrer la carte « Mises à jour » et son avis.
@@ -147,10 +153,12 @@ fn preparer(app: &mut App, etape: usize) {
         "confirmation" => {
             // L'avis « nouvelle version » reste visible sur les autres écrans.
             app.ecran = Ecran::Voix;
+            app.onglet_voix = crate::paths::Moteur::Xtts;
             app.dialogue = Some(Dialogue::Reinitialiser { jeu: app.cfg.jeu_actif.clone(), n: app.echantillons.len() });
         }
         "enregistrement" => {
             app.ecran = Ecran::Voix;
+            app.onglet_voix = crate::paths::Moteur::Xtts;
             app.simuler_enregistrement();
         }
         "synthese-sans-alltalk" => {
@@ -173,13 +181,25 @@ fn preparer(app: &mut App, etape: usize) {
         "ma-voix-qwen" => {
             app.ecran = Ecran::Voix;
             app.cfg.moteur = crate::paths::Moteur::Qwen;
+            app.onglet_voix = crate::paths::Moteur::Qwen;
         }
         "extrait-qwen" => {
             app.ecran = Ecran::Voix;
             app.cfg.moteur = crate::paths::Moteur::Qwen;
-            if let Some(e) = app.echantillons.first().cloned() {
-                app.ouvrir_reference_qwen(&e.chemin, &e.nom);
-            }
+            app.onglet_voix = crate::paths::Moteur::Qwen;
+            app.nouvelle_voix_qwen(None);
+        }
+        "generation" => {
+            // Génération en cours (simulée) : bandeau de progression et bouton Interrompre.
+            app.dialogue = None;
+            app.ecran = Ecran::Synthese;
+            app.cfg.moteur = crate::paths::Moteur::Xtts;
+            app.generation = Some(crate::app::Generation {
+                phase: crate::app::Phase::Morceau(crate::alltalk::Progression { morceau: 3, total: 7 }),
+                debut: Instant::now() - Duration::from_secs(48),
+                sortie: app.cfg.sorties_dir.join("cours-ebullition.wav"),
+                arret: Default::default(),
+            });
         }
         "mises-a-jour" => {
             // Réglages, défilé jusqu'à la carte « Mises à jour » (version simulée posée à l'étape reglages).
